@@ -1,9 +1,10 @@
 name: Build and Push Multi-Arch Docker Image
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["Linux Test"]
+    types:
+      - completed
   release:
     types: [published]
 
@@ -12,7 +13,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: my-go-service
+  IMAGE_NAME: apcupsd_exporter
 
 jobs:
   build-and-push:
