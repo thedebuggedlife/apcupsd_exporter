@@ -20,6 +20,8 @@ Usage of ./apcupsd_exporter:
         address for apcupsd exporter (default ":9162")
   -telemetry.path string
         URL path for surfacing collected metrics (default "/metrics")
+  -metrics.system bool
+        set to false to disable emitting system level metrics (default "true")
 ```
 
 ## Running as Docker Container

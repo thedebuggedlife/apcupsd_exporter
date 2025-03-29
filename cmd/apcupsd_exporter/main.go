@@ -19,6 +19,8 @@ var (
 
 	apcupsdAddr    = flag.String("apcupsd.addr", ":3551", "address of apcupsd Network Information Server (NIS)")
 	apcupsdNetwork = flag.String("apcupsd.network", "tcp", `network of apcupsd Network Information Server (NIS): typically "tcp", "tcp4", or "tcp6"`)
+
+	metricsSystem  = flag.Bool("metrics.system", true, "enable or disable default go, process, and promhttp metrics")
 )
 
 func main() {
@@ -26,6 +28,13 @@ func main() {
 
 	if *apcupsdAddr == "" {
 		log.Fatal("address of apcupsd Network Information Server (NIS) must be specified with '-apcupsd.addr' flag")
+	}
+
+	// Unregister default collectors if -metrics.system=false
+	if !*metricsSystem {
+		log.Println("Disabling default system metrics (go_*, process_*, promhttp_*)")
+		prometheus.Unregister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		prometheus.Unregister(prometheus.NewGoCollector())
 	}
 
 	fn := newClient(*apcupsdNetwork, *apcupsdAddr)
