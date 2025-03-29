@@ -34,7 +34,7 @@ docker run -d \
   --name apcupsd-exporter \
   --add-host=host.docker.internal:host-gateway \
   ghcr.io/thedebuggedlife/apcupsd_exporter:latest \
-  -apcupsd.addr host.docker.internal:3551
+  -apcupsd.addr=host.docker.internal:3551
 ```
 
 Using Docker Compose:
@@ -45,7 +45,7 @@ services:
     image: ghcr.io/thedebuggedlife/apcupsd_exporter:latest
     restart: unless-stopped
     command:
-      - -apcupsd.addr host.docker.internal:3551
+      - -apcupsd.addr=host.docker.internal:3551
     ports:
       - 9162:9162
     extra_hosts:

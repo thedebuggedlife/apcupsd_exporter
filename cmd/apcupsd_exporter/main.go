@@ -10,6 +10,7 @@ import (
 	"github.com/mdlayher/apcupsd"
 	apcupsdexporter "github.com/mdlayher/apcupsd_exporter"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -33,8 +34,8 @@ func main() {
 	// Unregister default collectors if -metrics.system=false
 	if !*metricsSystem {
 		log.Println("Disabling default system metrics (go_*, process_*, promhttp_*)")
-		prometheus.Unregister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-		prometheus.Unregister(prometheus.NewGoCollector())
+		prometheus.Unregister(collectors.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		prometheus.Unregister(collectors.NewGoCollector())
 	}
 
 	fn := newClient(*apcupsdNetwork, *apcupsdAddr)
