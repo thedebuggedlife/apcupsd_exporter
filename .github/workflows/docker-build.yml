@@ -1,4 +1,4 @@
-name: Build and Push Multi-Arch Docker Image
+name: Docker Build
 
 on:
   workflow_run:
