@@ -34,7 +34,7 @@ func main() {
 	// Unregister default collectors if -metrics.system=false
 	if !*metricsSystem {
 		log.Println("Disabling default system metrics (go_*, process_*, promhttp_*)")
-		prometheus.Unregister(collectors.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+		prometheus.Unregister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 		prometheus.Unregister(collectors.NewGoCollector())
 	}
 
