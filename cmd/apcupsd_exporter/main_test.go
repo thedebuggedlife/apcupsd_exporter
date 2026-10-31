@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"reflect"
 	"runtime"
 	"sort"
@@ -26,6 +28,17 @@ import (
 	"github.com/mdlayher/apcupsd_exporter/internal/fakenis"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// runMainEnv makes the test binary run main, so a test can exercise real flag handling.
+const runMainEnv = "APCUPSD_EXPORTER_TEST_RUN_MAIN"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(runMainEnv) != "" {
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
 
 // silentNIS accepts connections and never replies, holding them open until the
 // test ends. It returns the address and a count of accepted connections.
@@ -515,5 +528,274 @@ func TestOversizedNISMessageFailsOnlyThatScrape(t *testing.T) {
 	}
 	if !strings.Contains(body, `ups="example-ups"`) {
 		t.Errorf("scrape after recovery has no UPS metrics:\n%s", body)
+	}
+}
+
+// serverAddr returns the host:port of an httptest server.
+func serverAddr(srv *httptest.Server) string {
+	return srv.Listener.Addr().String()
+}
+
+// closedPort returns an address that nothing is listening on.
+func closedPort(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	return ln.Addr().String()
+}
+
+func TestHealthcheckURL(t *testing.T) {
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{addr: ":9162", want: "http://127.0.0.1:9162/healthz"},
+		{addr: "0.0.0.0:9162", want: "http://127.0.0.1:9162/healthz"},
+		{addr: "[::]:9162", want: "http://127.0.0.1:9162/healthz"},
+		{addr: "[::1]:9162", want: "http://[::1]:9162/healthz"},
+		{addr: "localhost:9162", want: "http://localhost:9162/healthz"},
+		{addr: "127.0.0.2:9162", want: "http://127.0.0.2:9162/healthz"},
+		{addr: "192.0.2.10:9162", want: "http://192.0.2.10:9162/healthz"},
+		{addr: "exporter.example:9162", want: "http://exporter.example:9162/healthz"},
+		{addr: "[fe80::1%en0]:9162", want: "http://[fe80::1%25en0]:9162/healthz"},
+		{addr: ":http", want: "http://127.0.0.1:80/healthz"},
+
+		{addr: ""},
+		{addr: "9162"},
+		{addr: "localhost"},
+		{addr: "::1"},
+		{addr: "[::1"},
+		{addr: ":"},
+		{addr: "localhost:"},
+		{addr: ":0"},
+		{addr: ":99999"},
+		{addr: ":no-such-port"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			got, err := healthcheckURL(tt.addr)
+			if tt.want == "" {
+				if err == nil {
+					t.Fatalf("expected %q to be rejected, got %q", tt.addr, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected %q to be accepted: %v", tt.addr, err)
+			}
+			if got != tt.want {
+				t.Fatalf("unexpected URL:\n- want: %s\n-  got: %s", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestRunHealthcheckStatusCodes(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   int
+	}{
+		{name: "ok", status: http.StatusOK, want: 0},
+		{name: "no content", status: http.StatusNoContent, want: 1},
+		{name: "not found", status: http.StatusNotFound, want: 1},
+		{name: "server error", status: http.StatusInternalServerError, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var method, target atomic.Value
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				method.Store(r.Method)
+				target.Store(r.URL.Path)
+				w.WriteHeader(tt.status)
+			}))
+			defer srv.Close()
+
+			if got := runHealthcheck(serverAddr(srv)); got != tt.want {
+				t.Fatalf("unexpected exit code: %d", got)
+			}
+			if method.Load() != http.MethodGet || target.Load() != "/healthz" {
+				t.Fatalf("unexpected request: %v %v", method.Load(), target.Load())
+			}
+		})
+	}
+}
+
+func TestRunHealthcheckFailsOnClosedPort(t *testing.T) {
+	if got := runHealthcheck(closedPort(t)); got != 1 {
+		t.Fatalf("unexpected exit code: %d", got)
+	}
+}
+
+func TestRunHealthcheckReportsMalformedAddress(t *testing.T) {
+	var logs lockedBuffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	if got := runHealthcheck("not-an-address"); got != 1 {
+		t.Fatalf("unexpected exit code: %d", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "not-an-address") {
+		t.Fatalf("log does not name the bad address: %q", got)
+	}
+}
+
+func TestRunHealthcheckDoesNotFollowRedirects(t *testing.T) {
+	var followed atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed.Add(1)
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.RedirectHandler(target.URL+"/metrics", http.StatusMovedPermanently))
+	defer srv.Close()
+
+	if got := runHealthcheck(serverAddr(srv)); got != 1 {
+		t.Errorf("unexpected exit code: %d", got)
+	}
+	if got := followed.Load(); got != 0 {
+		t.Fatalf("redirect target received %d requests", got)
+	}
+}
+
+func TestRunHealthcheckTimesOutOnSilentServer(t *testing.T) {
+	addr, accepted := silentNIS(t)
+
+	start := time.Now()
+	got := runHealthcheck(addr)
+	elapsed := time.Since(start)
+
+	if got != 1 {
+		t.Fatalf("unexpected exit code: %d", got)
+	}
+	if accepted() == 0 {
+		t.Fatal("probe never connected, so the timeout was not what ended it")
+	}
+	if elapsed < 2900*time.Millisecond {
+		t.Fatalf("probe gave up early, after %v", elapsed)
+	}
+	// Docker kills the probe at the Dockerfile's 5s timeout, which loses the exit code.
+	if elapsed > 4*time.Second {
+		t.Fatalf("probe outlived its 3s timeout: %v", elapsed)
+	}
+}
+
+func TestHealthcheckClientBypassesProxy(t *testing.T) {
+	transport, ok := newHealthcheckClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected a dedicated *http.Transport, the default one reads proxy settings")
+	}
+	if transport.Proxy != nil {
+		t.Fatal("probe must stay on the local listener, not go through a proxy")
+	}
+}
+
+func TestHealthzDoesNotDial(t *testing.T) {
+	for _, system := range []bool{true, false} {
+		t.Run(fmt.Sprintf("system=%t", system), func(t *testing.T) {
+			var dials atomic.Int32
+			fn := func(context.Context) (*apcupsd.Client, error) {
+				dials.Add(1)
+				return nil, errors.New("unreachable")
+			}
+			h := newHandler("/metrics", system, fn)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("unexpected status: %d", rec.Code)
+			}
+			if got := dials.Load(); got != 0 {
+				t.Fatalf("/healthz dialled apcupsd %d times", got)
+			}
+
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("unexpected /metrics status: %d", rec.Code)
+			}
+			if got := dials.Load(); got != 1 {
+				t.Fatalf("expected the scrape to dial once, got %d", got)
+			}
+		})
+	}
+}
+
+func TestHealthzDoesNotAddMetrics(t *testing.T) {
+	addr := respondingNIS(t)
+	h := newHandler("/metrics", true, newClient("tcp", addr))
+
+	before := scrapeFamilies(t, h)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+
+	if after := scrapeFamilies(t, h); !reflect.DeepEqual(before, after) {
+		t.Fatalf("/healthz changed the metric families:\n- before: %v\n-  after: %v", before, after)
+	}
+}
+
+func TestRunHealthcheckAgainstRealServerIgnoresDeadNIS(t *testing.T) {
+	nisAddr, accepted := silentNIS(t)
+
+	srv := httptest.NewServer(newHandler("/metrics", true, newClient("tcp", nisAddr)))
+	defer srv.Close()
+
+	if got := runHealthcheck(serverAddr(srv)); got != 0 {
+		t.Fatalf("unexpected exit code: %d", got)
+	}
+	if got := accepted(); got != 0 {
+		t.Fatalf("healthcheck reached apcupsd %d times", got)
+	}
+}
+
+func TestHealthcheckFlagRunsBeforeStartupChecks(t *testing.T) {
+	nisAddr, accepted := silentNIS(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		addr string
+		args []string
+		want int
+	}{
+		{name: "apcupsd address set", addr: serverAddr(srv), args: []string{"-apcupsd.addr=" + nisAddr}, want: 0},
+		{name: "apcupsd address empty", addr: serverAddr(srv), args: []string{"-apcupsd.addr="}, want: 0},
+		{name: "invalid metrics path", addr: serverAddr(srv), args: []string{"-telemetry.path=/healthz"}, want: 0},
+		{name: "closed port", addr: closedPort(t), args: []string{"-apcupsd.addr=" + nisAddr}, want: 1},
+		{name: "malformed address", addr: "not-an-address", args: []string{"-apcupsd.addr=" + nisAddr}, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], append([]string{"-healthcheck", "-telemetry.addr=" + tt.addr}, tt.args...)...)
+			cmd.Env = append(os.Environ(), runMainEnv+"=1")
+
+			out, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if err != nil && !errors.As(err, &exitErr) {
+				t.Fatalf("failed to run binary: %v", err)
+			}
+			if got := cmd.ProcessState.ExitCode(); got != tt.want {
+				t.Fatalf("unexpected exit code: %d, output: %s", got, out)
+			}
+			if got := accepted(); got != 0 {
+				t.Fatalf("healthcheck reached apcupsd %d times", got)
+			}
+		})
 	}
 }

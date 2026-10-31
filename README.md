@@ -51,3 +51,36 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
 ```
+
+## Healthcheck
+
+The exporter serves `/healthz`, which returns 200 and never contacts apcupsd.
+The `-healthcheck` flag makes the binary request `/healthz` from its own
+listener and exit 0 on a 200 and 1 on anything else, within 3 seconds. The
+image has no shell or curl, so its `HEALTHCHECK` uses this flag.
+
+Health means the exporter process is serving. An unreachable apcupsd daemon
+does **not** make the container unhealthy, because restarting the exporter
+can't fix the daemon. That failure shows up as an HTTP 500 from `/metrics`,
+which Prometheus records as `up == 0`.
+
+`HEALTHCHECK` can't see the arguments a container runs with, so the image
+always probes the default address. If you set `-telemetry.addr`, override the
+healthcheck with the same address, or the container will report `unhealthy`
+while the exporter is working:
+
+```yaml
+services:
+  apcupsd-exporter:
+    image: ghcr.io/thedebuggedlife/apcupsd_exporter
+    restart: unless-stopped
+    command:
+      - -apcupsd.addr=host.docker.internal:3551
+      - -telemetry.addr=:9200
+    healthcheck:
+      test: ["CMD", "/service", "-healthcheck", "-telemetry.addr=:9200"]
+    ports:
+      - 9200:9200
+    extra_hosts:
+      - host.docker.internal:host-gateway
+```

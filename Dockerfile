@@ -30,5 +30,8 @@ WORKDIR /
 # Copy the compiled binary from the build stage
 COPY --from=build /app/service .
 
+# Probe with the binary itself, because the image has no shell or curl
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/service", "-healthcheck"]
+
 # Run the service binary as the container entrypoint
 ENTRYPOINT ["/service"]
