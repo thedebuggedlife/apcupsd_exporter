@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+.worktrees
+.dockerignore
+.gitignore
+Dockerfile
+*.md
+docs
+paseo.json
+scripts
+testdata
+**/*_test.go
+apcupsd_exporter

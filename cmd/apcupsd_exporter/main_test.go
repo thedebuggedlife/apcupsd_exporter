@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"runtime"
@@ -21,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mdlayher/apcupsd"
+	"github.com/mdlayher/apcupsd_exporter/internal/fakenis"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -106,6 +109,24 @@ func serveStatus(c net.Conn) {
 	b.Write(msg)
 	_ = binary.Write(&b, binary.BigEndian, uint16(0))
 	_, _ = c.Write(b.Bytes())
+}
+
+// cannedNIS serves the named fake NIS response and returns its address.
+func cannedNIS(t *testing.T, name string) string {
+	t.Helper()
+
+	messages, err := fakenis.Response(name)
+	if err != nil {
+		t.Fatalf("failed to load response: %v", err)
+	}
+
+	srv, err := fakenis.Listen("127.0.0.1:0", messages)
+	if err != nil {
+		t.Fatalf("failed to start fake NIS: %v", err)
+	}
+	t.Cleanup(func() { srv.Close() })
+
+	return srv.Addr()
 }
 
 // scrapeFamilies returns the sorted metric family names from a 200 response.
@@ -357,46 +378,46 @@ func TestNewServerSetsTimeouts(t *testing.T) {
 	}
 }
 
+var metricsPathCases = []struct {
+	path string
+	ok   bool
+}{
+	{path: "/metrics", ok: true},
+	{path: "/metrics/", ok: true},
+	{path: "/custom/metrics", ok: true},
+	{path: "/metrics-v1_2.txt", ok: true},
+	{path: "/café", ok: true},
+	{path: "/healthz2", ok: true},
+	{path: "/healthz/metrics", ok: true},
+
+	{path: ""},
+	{path: "metrics"},
+	{path: " /metrics"},
+	{path: "/"},
+	{path: "/healthz"},
+	{path: "/healthz/"},
+	{path: "/a b"},
+	{path: "/a\tb"},
+	{path: "/a\nb"},
+	{path: "/a b"},
+	{path: "/{x}"},
+	{path: "/a{"},
+	{path: "/a}"},
+	{path: "/a\x00b"},
+
+	// These end in a redirect loop on at least one mux version.
+	{path: "//"},
+	{path: "/a//b"},
+	{path: "/a/../b"},
+	{path: "/./a"},
+	{path: "/metrics//"},
+	{path: "/a?b"},
+	{path: "/a#b"},
+	{path: "/a%20b"},
+}
+
 func TestValidateMetricsPath(t *testing.T) {
-	tests := []struct {
-		path string
-		ok   bool
-	}{
-		{path: "/metrics", ok: true},
-		{path: "/metrics/", ok: true},
-		{path: "/custom/metrics", ok: true},
-		{path: "/metrics-v1_2.txt", ok: true},
-		{path: "/café", ok: true},
-		{path: "/healthz2", ok: true},
-		{path: "/healthz/metrics", ok: true},
-
-		{path: ""},
-		{path: "metrics"},
-		{path: " /metrics"},
-		{path: "/"},
-		{path: "/healthz"},
-		{path: "/healthz/"},
-		{path: "/a b"},
-		{path: "/a\tb"},
-		{path: "/a\nb"},
-		{path: "/a b"},
-		{path: "/{x}"},
-		{path: "/a{"},
-		{path: "/a}"},
-		{path: "/a\x00b"},
-
-		// These end in a redirect loop on at least one mux version.
-		{path: "//"},
-		{path: "/a//b"},
-		{path: "/a/../b"},
-		{path: "/./a"},
-		{path: "/metrics//"},
-		{path: "/a?b"},
-		{path: "/a#b"},
-		{path: "/a%20b"},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range metricsPathCases {
 		t.Run(tt.path, func(t *testing.T) {
 			err := validateMetricsPath(tt.path)
 			if tt.ok && err != nil {
@@ -406,5 +427,93 @@ func TestValidateMetricsPath(t *testing.T) {
 				t.Fatalf("expected %q to be rejected", tt.path)
 			}
 		})
+	}
+}
+
+func TestAcceptedMetricsPathsServeOnRealMux(t *testing.T) {
+	addr := respondingNIS(t)
+
+	for _, tt := range metricsPathCases {
+		if !tt.ok {
+			continue
+		}
+
+		t.Run(tt.path, func(t *testing.T) {
+			srv := httptest.NewServer(newHandler(tt.path, false, newClient("tcp", addr)))
+			defer srv.Close()
+
+			client := &http.Client{Timeout: 5 * time.Second}
+			for _, target := range []string{tt.path, strings.TrimSuffix(tt.path, "/"), "/", "/unknown"} {
+				// The client gives up on a redirect loop, so err covers that failure.
+				resp, err := client.Get(srv.URL + (&url.URL{Path: target}).EscapedPath())
+				if err != nil {
+					t.Fatalf("GET %q failed: %v", target, err)
+				}
+				resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("GET %q: unexpected status: %d", target, resp.StatusCode)
+				}
+				if got := resp.Request.URL.Path; got != tt.path {
+					t.Errorf("GET %q ended on %q, want %q", target, got, tt.path)
+				}
+			}
+		})
+	}
+}
+
+func TestOversizedNISMessageFailsOnlyThatScrape(t *testing.T) {
+	oversized := cannedNIS(t, "oversized")
+	full := cannedNIS(t, "full")
+
+	var nisAddr atomic.Value
+	nisAddr.Store(oversized)
+	fn := func(ctx context.Context) (*apcupsd.Client, error) {
+		return newClient("tcp", nisAddr.Load().(string))(ctx)
+	}
+
+	var logs lockedBuffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	srv := httptest.NewServer(newHandler("/metrics", true, fn))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	scrape := func() (int, string) {
+		t.Helper()
+
+		resp, err := client.Get(srv.URL + "/metrics")
+		if err != nil {
+			t.Fatalf("scrape did not complete: %v", err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("failed to read response: %v", err)
+		}
+		return resp.StatusCode, string(body)
+	}
+
+	if code, body := scrape(); code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status from oversized message: %d\n%s", code, body)
+	}
+
+	got := logs.String()
+	for _, want := range []string{"error gathering metrics", "collector panic recovered", "slice bounds out of range"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("panic was not logged by the handler, want %q in logs: %q", want, got)
+		}
+	}
+
+	nisAddr.Store(full)
+
+	code, body := scrape()
+	if code != http.StatusOK {
+		t.Fatalf("unexpected status after recovery: %d\n%s", code, body)
+	}
+	if !strings.Contains(body, `ups="example-ups"`) {
+		t.Errorf("scrape after recovery has no UPS metrics:\n%s", body)
 	}
 }
