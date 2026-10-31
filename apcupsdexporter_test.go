@@ -29,20 +29,7 @@ func TestExporterDescribeDoesNotDial(t *testing.T) {
 		return nil, errors.New("Describe must not dial")
 	})
 
-	ch := make(chan *prometheus.Desc, 64)
-	e.Describe(ch)
-	close(ch)
-
-	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
-	var got []string
-	for d := range ch {
-		m := fqName.FindStringSubmatch(d.String())
-		if m == nil {
-			t.Fatalf("no fqName in descriptor: %v", d)
-		}
-		got = append(got, m[1])
-	}
-	sort.Strings(got)
+	got := describedNames(t, e)
 
 	want := []string{
 		"apcupsd_battery_charge_percent",
@@ -115,6 +102,28 @@ func TestOutputBaseline(t *testing.T) {
 			}
 		})
 	}
+}
+
+// describedNames returns the sorted metric names that collector describes.
+func describedNames(t *testing.T, collector prometheus.Collector) []string {
+	t.Helper()
+
+	ch := make(chan *prometheus.Desc, 64)
+	collector.Describe(ch)
+	close(ch)
+
+	fqName := regexp.MustCompile(`fqName: "([^"]+)"`)
+	var names []string
+	for d := range ch {
+		m := fqName.FindStringSubmatch(d.String())
+		if m == nil {
+			t.Fatalf("no fqName in descriptor: %v", d)
+		}
+		names = append(names, m[1])
+	}
+	sort.Strings(names)
+
+	return names
 }
 
 // testCollector scrapes collector and fails the test unless the scrape returns 200.
