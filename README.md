@@ -1,9 +1,40 @@
-# apcupsd_exporter 
-[![CI](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml) [![GoDoc](http://godoc.org/github.com/mdlayher/apcupsd_exporter?status.svg)](http://godoc.org/github.com/mdlayher/apcupsd_exporter)
+# apcupsd_exporter
+[![CI](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mdlayher/apcupsd_exporter.svg)](https://pkg.go.dev/github.com/mdlayher/apcupsd_exporter)
 
 Command `apcupsd_exporter` provides a Prometheus exporter for the
 [apcupsd](http://www.apcupsd.org/) Network Information Server (NIS). MIT
 Licensed.
+
+This is a maintained fork of
+[mdlayher/apcupsd_exporter](https://github.com/mdlayher/apcupsd_exporter) that
+publishes versioned container images. It is a drop-in replacement: it keeps
+upstream's `apcupsd_*` metric names, labels and units, and its module path.
+
+## Differences from upstream
+
+- **Container image:** multi-arch distroless images for `linux/amd64`,
+  `linux/arm` and `linux/arm64` on GHCR, with [version tags](#image-tags).
+- **Healthcheck:** a [`/healthz` endpoint and `-healthcheck` flag](#healthcheck),
+  used by the image's `HEALTHCHECK`.
+- **`apcupsd_output_amps`:** omitted when the UPS doesn't report it, instead of a
+  constant 0. The [metric catalogue](docs/metrics.md) has the details.
+- **`-metrics.system=false`:** leaves only the `apcupsd_*` metrics.
+- **Bounded scrapes:** the 5 second limit covers the whole NIS exchange, so a NIS
+  that accepts a connection and never answers fails the scrape instead of hanging
+  it. The HTTP server has timeouts too.
+- **Startup:** the exporter doesn't contact apcupsd until the first scrape, and an
+  invalid `-telemetry.path` is rejected with a clear error.
+- **Dependencies:** current Go and `client_golang`, kept up to date with Dependabot.
+  Because of this, the exporter survives an oversized NIS message, and the `go_*`
+  families are a smaller set.
+
+## Metrics
+
+[docs/metrics.md](docs/metrics.md) lists every metric with its type, unit, labels
+and source NIS field, and what happens when the UPS doesn't report it.
+
+When apcupsd can't be reached, `/metrics` returns an HTTP 500 and Prometheus
+records `up == 0`.
 
 ## Usage
 
@@ -13,15 +44,17 @@ Available flags for `apcupsd_exporter` include:
 $ ./apcupsd_exporter -h
 Usage of ./apcupsd_exporter:
   -apcupsd.addr string
-        address of apcupsd Network Information Server (NIS) (default ":3551")
+    	address of apcupsd Network Information Server (NIS) (default ":3551")
   -apcupsd.network string
-        network of apcupsd Network Information Server (NIS): typically "tcp", "tcp4", or "tcp6" (default "tcp")
+    	network of apcupsd Network Information Server (NIS): typically "tcp", "tcp4", or "tcp6" (default "tcp")
+  -healthcheck
+    	probe the exporter on '-telemetry.addr' and exit: 0 if it is serving, 1 if not
+  -metrics.system
+    	enable or disable default go, process, and promhttp metrics (default true)
   -telemetry.addr string
-        address for apcupsd exporter (default ":9162")
+    	address for apcupsd exporter (default ":9162")
   -telemetry.path string
-        URL path for surfacing collected metrics (default "/metrics")
-  -metrics.system bool
-        set to false to disable emitting system level metrics (default "true")
+    	URL path for surfacing collected metrics (default "/metrics")
 ```
 
 ## Running as Docker Container
@@ -33,7 +66,7 @@ docker run -d \
   -p 9162:9162 \
   --name apcupsd-exporter \
   --add-host=host.docker.internal:host-gateway \
-  ghcr.io/thedebuggedlife/apcupsd_exporter:latest \
+  ghcr.io/thedebuggedlife/apcupsd_exporter:v0.4.0 \
   -apcupsd.addr=host.docker.internal:3551
 ```
 
@@ -42,7 +75,7 @@ Using Docker Compose:
 ```yaml
 services:
   apcupsd-exporter:
-    image: ghcr.io/thedebuggedlife/apcupsd_exporter:latest
+    image: ghcr.io/thedebuggedlife/apcupsd_exporter:v0.4.0
     restart: unless-stopped
     command:
       - -apcupsd.addr=host.docker.internal:3551
@@ -51,6 +84,22 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
 ```
+
+## Image tags
+
+Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`. Pin a
+`vX.Y.Z` tag if you want to choose when you upgrade.
+
+| Tag | What it is |
+|---|---|
+| `vX.Y.Z` | A release. Published once and not moved; a fix ships as a newer tag |
+| `latest` | The most recent release to be published. It moves only when a release is tagged, never on a push to `main` |
+| `edge` | The newest build of `main`, from a push or the weekly rebuild. It is not a release |
+| Full commit SHA | The build of that commit. The weekly rebuild can give the same tag a new digest |
+
+Every tag covers all three platforms. The GitHub
+[releases](https://github.com/thedebuggedlife/apcupsd_exporter/releases) list what
+changed in each version.
 
 ## Healthcheck
 
@@ -72,7 +121,7 @@ while the exporter is working:
 ```yaml
 services:
   apcupsd-exporter:
-    image: ghcr.io/thedebuggedlife/apcupsd_exporter
+    image: ghcr.io/thedebuggedlife/apcupsd_exporter:v0.4.0
     restart: unless-stopped
     command:
       - -apcupsd.addr=host.docker.internal:3551
