@@ -5,10 +5,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -23,6 +27,9 @@ import (
 // healthzPath is reserved for the container healthcheck.
 const healthzPath = "/healthz"
 
+// healthcheckTimeout must stay below the HEALTHCHECK timeout in the Dockerfile.
+const healthcheckTimeout = 3 * time.Second
+
 var (
 	telemetryAddr = flag.String("telemetry.addr", ":9162", "address for apcupsd exporter")
 	metricsPath   = flag.String("telemetry.path", "/metrics", "URL path for surfacing collected metrics")
@@ -31,10 +38,16 @@ var (
 	apcupsdNetwork = flag.String("apcupsd.network", "tcp", `network of apcupsd Network Information Server (NIS): typically "tcp", "tcp4", or "tcp6"`)
 
 	metricsSystem = flag.Bool("metrics.system", true, "enable or disable default go, process, and promhttp metrics")
+
+	healthcheck = flag.Bool("healthcheck", false, "probe the exporter on '-telemetry.addr' and exit: 0 if it is serving, 1 if not")
 )
 
 func main() {
 	flag.Parse()
+
+	if *healthcheck {
+		os.Exit(runHealthcheck(*telemetryAddr))
+	}
 
 	if *apcupsdAddr == "" {
 		log.Fatal("address of apcupsd Network Information Server (NIS) must be specified with '-apcupsd.addr' flag")
@@ -100,6 +113,9 @@ func newHandler(metricsPath string, system bool, fn apcupsdexporter.ClientFunc) 
 
 	mux := http.NewServeMux()
 	mux.Handle(metricsPath, metrics)
+	mux.HandleFunc(healthzPath, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, metricsPath, http.StatusMovedPermanently)
 	})
@@ -115,6 +131,69 @@ func newServer(addr string, h http.Handler) *http.Server {
 		ReadTimeout:       10 * time.Second,
 		// Must outlast the exporter's 5s scrape limit, or a slow scrape gets no response.
 		WriteTimeout: 15 * time.Second,
+	}
+}
+
+// runHealthcheck probes the exporter listening on addr and returns the process exit code.
+func runHealthcheck(addr string) int {
+	if err := probeHealthz(addr); err != nil {
+		log.Printf("healthcheck failed: %v", err)
+		return 1
+	}
+	return 0
+}
+
+func probeHealthz(addr string) error {
+	u, err := healthcheckURL(addr)
+	if err != nil {
+		return err
+	}
+
+	resp, err := newHealthcheckClient().Get(u)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: unexpected status: %s", u, resp.Status)
+	}
+	return nil
+}
+
+// healthcheckURL derives the probe URL from a listen address.
+func healthcheckURL(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid '-telemetry.addr' flag %q: %w", addr, err)
+	}
+
+	portNum, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return "", fmt.Errorf("invalid '-telemetry.addr' flag %q: %w", addr, err)
+	}
+	if portNum == 0 {
+		return "", fmt.Errorf("invalid '-telemetry.addr' flag %q: a fixed port is required", addr)
+	}
+
+	// Loopback is IPv4 because Go's wildcard listeners are normally dual-stack and ::1 may not exist.
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "127.0.0.1"
+	}
+
+	u := url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(portNum)), Path: healthzPath}
+	return u.String(), nil
+}
+
+func newHealthcheckClient() *http.Client {
+	return &http.Client{
+		Timeout: healthcheckTimeout,
+		// A transport without a Proxy keeps the probe on the exporter's own listener.
+		Transport: &http.Transport{},
+		// Binaries without /healthz redirect it to the metrics path, which dials apcupsd.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 }
 

@@ -16,9 +16,11 @@ go vet ./...
 staticcheck ./...                               # CI installs honnef.co/go/tools/cmd/staticcheck@latest
 gofmt -l .                                      # must print nothing; not in CI yet
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
+go run ./cmd/apcupsd_exporter -healthcheck      # probes /healthz on -telemetry.addr, exits 0 or 1
 go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:3551; -addr changes it
 docker build -t apcupsd_exporter .
 docker buildx build --platform linux/amd64,linux/arm,linux/arm64 .  # needs a docker-container builder or the containerd image store
+scripts/test-container.sh <image>               # both healthcheck container tests; needs docker and curl
 ```
 
 There is no Makefile.
@@ -29,7 +31,7 @@ You can smoke-test without a UPS. With an unreachable `-apcupsd.addr`, the expor
 
 Three layers, each constructing the next:
 
-1. `cmd/apcupsd_exporter/main.go` parses flags, validates `-telemetry.path`, and serves HTTP. `newHandler` registers an `Exporter` on a private Prometheus registry and routes on a private `ServeMux`. `newServer` sets the HTTP timeouts. `newClient` supplies the `ClientFunc` that dials the NIS.
+1. `cmd/apcupsd_exporter/main.go` parses flags, runs `-healthcheck` if set, validates `-telemetry.path`, and serves HTTP. `newHandler` registers an `Exporter` on a private Prometheus registry and routes on a private `ServeMux`. `newServer` sets the HTTP timeouts. `newClient` supplies the `ClientFunc` that dials the NIS.
 2. `apcupsdexporter.go`: `Exporter` is stateless. Every `Collect` creates a 5s context, dials a new connection, builds a new `UPSCollector`, runs it, and closes the connection. Nothing is cached between scrapes.
 3. `upscollector.go`: `UPSCollector` turns one `apcupsd.Status` into const metrics. It reads through the `StatusSource` interface, which is also the test seam (`testStatusSource`).
 
@@ -43,6 +45,10 @@ Behaviour that spans these layers:
 - **`/` is a catch-all 301 to the metrics path.** Any route not explicitly registered redirects there, so a redirect-following client ends up on `/metrics`, which dials apcupsd. `validateMetricsPath` rejects `/` and `/healthz` at startup, because they would collide with a route, and anything the mux can't serve as a plain literal path. A new route must be added to its reserved list.
 - **`-metrics.system=false` leaves only `apcupsd_*`.** The go and process collectors and the promhttp instrumentation are added only when the flag is true, and then match what the default registry exposes. `HandlerOpts.Registry` stays unset, because it adds `promhttp_metric_handler_errors_total`.
 - **A failed gather is logged.** `HandlerOpts.ErrorLog` logs what promhttp turns into a 500.
+- **Health means the exporter is serving.** `/healthz` returns 200 without touching the registry or the `ClientFunc`, and it adds no metric. An unreachable apcupsd must not make the container unhealthy: restarting the exporter can't fix the daemon, and `docker compose up --wait` must not fail because of it. That failure stays a 500 from `/metrics`.
+- **`-healthcheck` runs before everything else.** It comes first after `flag.Parse()`, so it never dials apcupsd and can't fail on unrelated flags. `runHealthcheck` does `GET /healthz` on the `-telemetry.addr` listener, with an empty or wildcard host becoming `127.0.0.1`, and returns 0 only on a 200. Its 3s limit must stay below the Dockerfile's 5s `HEALTHCHECK` timeout.
+- **The probe client must not follow redirects or use a proxy.** A binary without `/healthz` answers 301 to the metrics path (O2), and following it would dial apcupsd. A proxy could send the probe somewhere other than this listener.
+- **The image's `HEALTHCHECK` can't see runtime arguments.** It always probes the default address, so a non-default `-telemetry.addr` needs a matching healthcheck override.
 - **The write timeout must outlast the scrape limit.** `WriteTimeout` is 15s against the 5s limit; below that, a slow scrape gets a dropped connection instead of a 500.
 
 ## Testing notes
@@ -50,7 +56,8 @@ Behaviour that spans these layers:
 - The root package's collector tests scrape through `testCollector`, which uses a `PedanticRegistry` and fails unless the response is 200. Tests that expect a failed scrape use `testCollectorStatus`.
 - A table case with no `matches`, such as `empty`, only proves the gather succeeds.
 - `TestOutputBaseline` runs raw NIS text through the fake NIS, the real client, the `Exporter` and promhttp, and compares the whole response with `testdata/golden/`. Those files came from the `v0.3.0` binary (`3f531e59`), with the `apcupsd_output_amps` lines added by hand. Never regenerate them from the working tree: a difference there means a frozen metric changed.
-- `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners and the fake NIS. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s by design. `TestAcceptedMetricsPathsServeOnRealMux` serves every accepted row of `metricsPathCases`, so a new path needs only a row there.
+- `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners and the fake NIS. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s and `TestRunHealthcheckTimesOutOnSilentServer` the full 3s, by design. `TestMain` runs the real `main` when `APCUPSD_EXPORTER_TEST_RUN_MAIN` is set, so `TestHealthcheckFlagRunsBeforeStartupChecks` can check flag handling in a subprocess. `TestAcceptedMetricsPathsServeOnRealMux` serves every accepted row of `metricsPathCases`, so a new path needs only a row there.
+- `scripts/test-container.sh` runs the image's own `HEALTHCHECK` with shorter timings, in a healthy and a mismatched `-telemetry.addr` container. It must keep working on bash 3.2 and without `timeout`, for macOS.
 - `process_*` families depend on the platform (macOS lacks `process_network_*`), so a test may only require them on Linux, and a before-and-after comparison must run on Linux.
 - `internal/fakenis` is the fake NIS, in-process through `fakenis.Listen` or standalone through `internal/fakenis/cmd/fakenis`. Canned responses are the files in `internal/fakenis/responses/`, chosen by name. Any new fake must speak the same wire protocol: each message has a 2-byte big-endian length prefix, and a zero-length message ends the response. `apcupsd.New(rwc)` adds this framing to whatever it wraps, so pass it the raw connection.
 - The `oversized` response panics the real client (O3). `client_golang` recovers it, so only that scrape fails, and `TestOversizedNISMessageFailsOnlyThatScrape` holds that in place.
@@ -75,7 +82,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `scripts/test-container.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
