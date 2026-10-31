@@ -78,7 +78,7 @@ jobs:
   publish:
     # image is PR-only, and a skipped job in needs would skip this one.
     needs: [test, lint, vuln]
-    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')) || (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     runs-on: ubuntu-latest
     permissions:
       contents: read

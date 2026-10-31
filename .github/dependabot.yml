@@ -4,11 +4,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
-      go-minor-patch:
+      go-patch:
         applies-to: version-updates
         patterns: ['*']
-        update-types: [minor, patch]
+        update-types: [patch]
+      go-minor:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor]
       go-security:
         applies-to: security-updates
         patterns: ['*']
@@ -17,18 +23,30 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
-      actions-minor-patch:
+      actions-patch:
         applies-to: version-updates
         patterns: ['*']
-        update-types: [minor, patch]
+        update-types: [patch]
+      actions-minor:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor]
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
-      docker-minor-patch:
+      docker-patch:
         applies-to: version-updates
         patterns: ['*']
-        update-types: [minor, patch]
+        update-types: [patch]
+      docker-minor:
+        applies-to: version-updates
+        patterns: ['*']
+        update-types: [minor]

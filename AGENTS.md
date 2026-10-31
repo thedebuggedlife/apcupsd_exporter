@@ -92,7 +92,6 @@ Releases are tag-driven and made by hand. There is no release-please. Every `vX.
 |---|---|---|
 | Strict `vX.Y.Z` tag on a commit already on `main` | `vX.Y.Z` (keeping the `v`), `latest`, full commit SHA | Created by the `release` job |
 | Push to `main` | `edge`, full commit SHA | None |
-| Weekly `schedule` | `edge`, full commit SHA | None |
 
 To release:
 
@@ -108,34 +107,60 @@ How publishing is gated:
 - **`publish` needs `test`, `lint` and `vuln`, and never `image`.** `image` is PR-only, and a skipped job in `needs` skips everything that depends on it, so nothing would ever publish.
 - **`publish` scans before it pushes,** so a failed Trivy scan can't leave a new `latest` behind.
 - **A tag run has two guards:** the tag must be a strict `vX.Y.Z`, and the tagged commit must be on `main`.
-- **`latest` is off unless the run is for a tag.** `metadata-action` runs with `flavor: latest=false` and enables `latest` explicitly, so a `main` push or the schedule can never move it.
-- **Every job that writes declares its own `permissions:`.** The organisation caps the default `GITHUB_TOKEN` at read-only, and that can't be changed per repo.
+- **`latest` is off unless the run is for a tag.** `metadata-action` runs with `flavor: latest=false` and enables `latest` explicitly, so a `main` push can never move it.
+- **Every job that writes with `GITHUB_TOKEN` declares its own `permissions:`.** The organisation caps the default `GITHUB_TOKEN` at read-only, and that can't be changed per repo.
+- **Only a push publishes.** The weekly `schedule` runs `test`, `lint` and `vuln`, and nothing else.
 
 Limits:
 
 - `latest` can move backwards. A tag on an older commit that's on `main` passes both guards, so `latest` follows it. Re-running an old tag's run does the same.
-- The weekly schedule can give a full commit SHA tag a new digest, because it re-pushes that tag with a fresh build.
 
 ## Dependabot
 
-`.github/dependabot.yml` opens weekly version updates for `gomod`, `github-actions` and `docker`, with minor and patch updates grouped. `.github/workflows/dependabot-auto-merge.yml` enables auto-merge on a narrow set of security updates. It is separate from `ci.yml` so that its write token stays away from `publish`.
+`.github/dependabot.yml` opens weekly version updates for `gomod`, `github-actions` and `docker`, with patch and minor updates in separate groups and a 7-day `cooldown`, which security updates ignore. `.github/workflows/dependabot-auto-merge.yml` decides what auto-merges. It is separate from `ci.yml` so that the app key stays away from `publish`.
 
-- **What auto-merges:** a Dependabot security update to Go modules where every updated module moves at patch or minor level between plain `X.Y.Z` releases.
-- **What stays manual:** majors, version updates, `github-actions`, `docker`, pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases and `+incompatible` versions. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
-- **How a security update is recognised:** the PR is in the `go-security` group, or it is ungrouped and every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API and the job's `vulnerability-alerts: read`, so it needs no stored token. `fetch-metadata`'s own `alert-lookup` can come back empty for a Go module that has an open alert, so it isn't used.
-- **Anything unclear does nothing.** Missing metadata or a failed alert lookup fails a step, which leaves auto-merge off. The job isn't a required check, so a failure here doesn't block the PR.
+| Update | Ordinary | Security |
+|---|---|---|
+| Patch | Auto-merge | Auto-merge |
+| Base image digest only (same tag) | Auto-merge | Auto-merge |
+| Minor | Held for review | Auto-merge for Go modules, held otherwise |
+| Major | Held for review | Held for review |
+| Base image moving to a new tag | Held for review | Held for review |
+| Unknown update type | Held for review | Held for review |
+
+"Held for review" means the PR stays open with auto-merge off. A required check can stop any of these merges, because auto-merge only ever waits for them.
+
+- **Every update in a PR must qualify.** One minor holds a whole PR, which is why the groups are split by level.
+- **Patch and minor mean a move between plain `X.Y.Z` versions.** Pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases, `+incompatible` versions and bare commit SHAs count as unknown. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
+- **Any base image tag change is held,** even `golang:1.27.3-trixie` to `1.27.4-trixie`. The one-Go-version rule says that bump must also update `go.mod`, and the `docker` updater won't do that.
+- **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title may carry a prefix like `build(deps): `, because Dependabot copies the repository's commit style.
+- **Digest updates stay out of groups.** A group with `update-types` admits only updates that compare higher, and a digest bump keeps its version, so it arrives as its own PR. That is why the `docker` groups keep `update-types`. A group PR holding several digests would be held.
+- **How a security update is recognised:** a Go module PR in the `go-security` group, or an ungrouped one where every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API. `fetch-metadata`'s own `alert-lookup` isn't used: it matches the alert's package name exactly, so it misses a Go alert filed against a package inside the module, and a failed lookup would fail the whole metadata step.
+- **An unreadable alert means an ordinary update.** A security patch still merges as a patch, and a security minor is held.
+- **A PR with more than one commit is held.** `fetch-metadata` only checks the first commit, so a commit pushed on top of Dependabot's would otherwise inherit its decision.
+- **Each push is decided again.** If the decision is to hold and auto-merge is on, the workflow turns it off. That includes auto-merge a maintainer turned on by hand, and a metadata failure. If the app token can't be created, the job fails and can't turn it off.
+- **The job isn't a required check,** so a failure in it doesn't block the PR.
 - **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, with no required approvals.
 - **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, and `allow_auto_merge`.
-- **`actionlint` doesn't know `vulnerability-alerts` yet.** Run it with `-ignore 'unknown permission scope "vulnerability-alerts"'`.
-- **The weekly `schedule` in `ci.yml` stands in for missed pushes.** A merge made with `GITHUB_TOKEN` isn't expected to trigger `on: push`, so CI wouldn't run on `main` and `edge` wouldn't rebuild. The schedule publishes `edge` and the full commit SHA like a `main` push, never `latest`.
+
+### The `automated-releases` app
+
+The workflow does everything with a token from the `automated-releases` GitHub App, so the job's `GITHUB_TOKEN` has no permissions.
+
+- **Why an app:** `GITHUB_TOKEN` can't hold `workflows`, so GitHub refuses to enable auto-merge on a PR that edits `.github/workflows/`. And a merge made with `GITHUB_TOKEN` doesn't fire `on: push`, while one made with the app does, so CI and `publish` run for every auto-merge.
+- **Credentials:** the repo variable `RELEASE_BOT_APP_ID` and the Actions secret `RELEASE_BOT_PRIVATE_KEY`. The token requests only `contents: write`, `pull-requests: write`, `vulnerability-alerts: read` and `workflows: write`.
+- **The `pull_request_target` job must never run PR code.** It holds the app key, so it has no `actions/checkout`, the logic stays inline, and PR-controlled values reach scripts only through `env`. It runs only when the author is `dependabot[bot]` and the head repo is this repo.
+- **`pull_request_target` gets Actions secrets on a Dependabot PR,** unless Dependabot created the PR's base branch. GitHub's general statement that Dependabot runs see only Dependabot secrets doesn't apply to this event. If `Check the app credentials` fails on a Dependabot PR, add `RELEASE_BOT_PRIVATE_KEY` as a Dependabot secret too.
 
 Limits:
 
 - `staticcheck` and `govulncheck` are pinned as `go run` arguments in `ci.yml`, so Dependabot can't update them. They need manual bumps.
-- A `docker` PR that moves the `golang` image must also update `go.mod`, under the one-Go-version rule.
-- Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure and needs a manual Go bump. The weekly run is what catches it when no PRs are open.
+- A held `docker` PR that moves the `golang` image must also update `go.mod`, under the one-Go-version rule.
+- Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure and needs a manual Go bump. The weekly `schedule` is what catches it when no PRs are open.
 - While `vuln` is failing, it blocks auto-merge too.
-- An auto-merge only reaches `main`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
+- An auto-merge only reaches `main` and `edge`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
+- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. The `cooldown` is the only delay before they run with those credentials.
+- The `cooldown` doesn't hold a digest update if the registry gives no publish date.
 - GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly runs stop, check `ci.yml`'s `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
 
 ## Upstream relationship

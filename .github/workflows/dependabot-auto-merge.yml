@@ -1,62 +1,107 @@
 name: Dependabot auto-merge
 
+# pull_request_target runs main's copy with the app key, so this job must never run PR code.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
+    types: [opened, reopened, synchronize]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   auto-merge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      vulnerability-alerts: read
+    timeout-minutes: 5
+    concurrency:
+      group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
+      - name: Check the app credentials
+        env:
+          APP_ID: ${{ vars.RELEASE_BOT_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_BOT_APP_ID or RELEASE_BOT_PRIVATE_KEY isn't available to this event"
+            exit 1
+          fi
+      - name: Create app token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-vulnerability-alerts: read
+          permission-workflows: write
       - name: Read Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-      - name: Check for a Go module security fix at patch or minor level
-        id: check
-        if: >-
-          steps.metadata.outputs.package-ecosystem == 'go_modules' &&
-          (steps.metadata.outputs.dependency-group == 'go-security' ||
-          steps.metadata.outputs.dependency-group == '')
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+      - name: Decide whether the update may merge
+        id: decide
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          COMMITS: ${{ github.event.pull_request.commits }}
+          ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
           GROUP: ${{ steps.metadata.outputs.dependency-group }}
+          TITLE: ${{ github.event.pull_request.title }}
           UPDATES: ${{ steps.metadata.outputs.updated-dependencies-json }}
         run: |
           # Dependabot can open a lone security update outside its group, so an ungrouped PR needs an open alert.
           alerts="$RUNNER_TEMP/alerts.json"
           echo '[]' > "$alerts"
-          if [ -z "$GROUP" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/dependabot/alerts?state=open&ecosystem=go&per_page=100" > "$alerts"
+          if [ "$ECOSYSTEM" = go_modules ] && [ -z "$GROUP" ]; then
+            if ! gh api "repos/$GITHUB_REPOSITORY/dependabot/alerts?state=open&ecosystem=go&per_page=100" > "$alerts" ||
+              ! jq -e 'type == "array"' "$alerts" > /dev/null; then
+              echo "::warning::Couldn't read the alerts, so this PR is treated as an ordinary update"
+              echo '[]' > "$alerts"
+            fi
           fi
-          eligible="$(jq --arg group "$GROUP" --argjson updates "$UPDATES" '
+          merge="$(jq -n --slurpfile alerts "$alerts" --argjson updates "$UPDATES" \
+            --arg commits "$COMMITS" --arg ecosystem "$ECOSYSTEM" --arg group "$GROUP" --arg title "$TITLE" '
             def release: test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$");
             def parts: ltrimstr("v") | split(".") | map(tonumber);
+            def versioned: (.prevVersion | release) and (.newVersion | release);
+            def patch: .updateType == "version-update:semver-patch";
+            def minor: .updateType == "version-update:semver-minor";
             def fixed_by($update):
               (.security_vulnerability.first_patched_version.identifier // "") as $patched
               | .dependency.package.name as $name
               | ($name == $update.dependencyName or ($name | startswith($update.dependencyName + "/")))
                 and ($patched | release)
                 and (($patched | parts) <= ($update.newVersion | parts));
-            . as $alerts
-            | ($updates | length > 0) and all($updates[];
+            def security:
               . as $update
-              | (.updateType | IN("version-update:semver-patch", "version-update:semver-minor"))
-                and (.prevVersion | release)
-                and (.newVersion | release)
-                and ($group != "" or any($alerts[]; fixed_by($update))))
-          ' "$alerts")"
-          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+              | $group == "go-security" or ($group == "" and any($alerts[0][]; fixed_by($update)));
+            # Dependabot writes backticked digests only when the tag is unchanged; a tag change prints the tags.
+            def digest_only:
+              ($updates | length == 1)
+              and ($title | test("(^|: )[Bb]ump \\S+ from `[0-9a-f]{7}` to `[0-9a-f]{7}`( in the \\S+ group)?$"))
+              and (.prevVersion | test("^(`[0-9a-f]{7}`)?$"));
+            def qualifies:
+              if $ecosystem == "docker" then digest_only
+              elif $ecosystem == "github_actions" then versioned and patch
+              elif $ecosystem == "go_modules" then versioned and (patch or (minor and security))
+              else false end;
+            $commits == "1" and ($updates | length > 0) and all($updates[]; qualifies)
+          ')"
+          echo "merge=$merge" >> "$GITHUB_OUTPUT"
       - name: Enable auto-merge
-        if: steps.check.outputs.eligible == 'true'
+        if: steps.decide.outputs.merge == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"
+      - name: Turn auto-merge off
+        if: ${{ !cancelled() && steps.token.outcome == 'success' && steps.decide.outputs.merge != 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
