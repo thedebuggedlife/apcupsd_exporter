@@ -18,6 +18,7 @@ gofmt -l .                                      # must print nothing; not in CI 
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
 go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:3551; -addr changes it
 docker build -t apcupsd_exporter .
+docker buildx build --platform linux/amd64,linux/arm,linux/arm64 .  # needs a docker-container builder or the containerd image store
 ```
 
 There is no Makefile.
@@ -34,7 +35,7 @@ Three layers, each constructing the next:
 
 Behaviour that spans these layers:
 
-- **Failure is all-or-nothing.** A dial or `Status()` error becomes `prometheus.NewInvalidMetric`, which fails the gather, so promhttp returns 500 for the whole page, including `go_*` and `process_*`. Prometheus records this as `up == 0`. `NewUPSCollector(nil)` exists only to supply `Desc`s, for `Exporter.Describe` and for that error, and a nil-source collector must never have `Collect` called.
+- **Failure is all-or-nothing.** A dial or `Status()` error becomes `prometheus.NewInvalidMetric`, which fails the gather, so promhttp returns 500 for the whole page, including `go_*` and `process_*`. Prometheus records this as `up == 0`. A panic in `Collect` ends the same way, because `client_golang` recovers it. `NewUPSCollector(nil)` exists only to supply `Desc`s, for `Exporter.Describe` and for that error, and a nil-source collector must never have `Collect` called.
 - **One bad field fails the scrape.** The library's `Status()` returns an error if any single NIS field fails to parse.
 - **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero. The one exception is `apcupsd_output_amps`, which is omitted unless it is above 0, so a true 0 A reading is omitted too.
 - **`Exporter.Describe` is static.** It sends descriptors without touching the network, so registration never blocks on the NIS and the collector is always checked.
@@ -49,10 +50,10 @@ Behaviour that spans these layers:
 - The root package's collector tests scrape through `testCollector`, which uses a `PedanticRegistry` and fails unless the response is 200. Tests that expect a failed scrape use `testCollectorStatus`.
 - A table case with no `matches`, such as `empty`, only proves the gather succeeds.
 - `TestOutputBaseline` runs raw NIS text through the fake NIS, the real client, the `Exporter` and promhttp, and compares the whole response with `testdata/golden/`. Those files came from the `v0.3.0` binary (`3f531e59`), with the `apcupsd_output_amps` lines added by hand. Never regenerate them from the working tree: a difference there means a frozen metric changed.
-- `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s by design.
-- `client_golang` exposes no `process_*` families on macOS, so a test may only require them on Linux.
+- `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners and the fake NIS. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s by design. `TestAcceptedMetricsPathsServeOnRealMux` serves every accepted row of `metricsPathCases`, so a new path needs only a row there.
+- `process_*` families depend on the platform (macOS lacks `process_network_*`), so a test may only require them on Linux, and a before-and-after comparison must run on Linux.
 - `internal/fakenis` is the fake NIS, in-process through `fakenis.Listen` or standalone through `internal/fakenis/cmd/fakenis`. Canned responses are the files in `internal/fakenis/responses/`, chosen by name. Any new fake must speak the same wire protocol: each message has a 2-byte big-endian length prefix, and a zero-length message ends the response. `apcupsd.New(rwc)` adds this framing to whatever it wraps, so pass it the raw connection.
-- The `oversized` response panics the real client (O3), which crashes a test binary until step 3's `client_golang` upgrade. Until then, read it with raw framing only.
+- The `oversized` response panics the real client (O3). `client_golang` recovers it, so only that scrape fails, and `TestOversizedNISMessageFailsOnlyThatScrape` holds that in place.
 
 ## Adding a metric
 
@@ -66,6 +67,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline.
 - **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Push tags by name.
 - **Keep the project generic.** Code, docs, commits, PRs, and issues must not refer to a specific deployment, host, network, or person's infrastructure. Use placeholder addresses in examples.
+- **One Go version.** `go.mod`, `linux-test.yml`, `static-analysis.yml` and the `Dockerfile` must name the same release. Both `Dockerfile` base images are pinned to a version plus multi-arch index digest, so bump them together.
 - **Keep the module path** `github.com/mdlayher/apcupsd_exporter`. It has no runtime effect and keeps upstream merges cheap.
 - **Keep `upscollector.go` changes small** so future upstream merges stay easy.
 
@@ -73,7 +75,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
