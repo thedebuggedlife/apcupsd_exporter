@@ -11,10 +11,10 @@ Prometheus exporter for the [apcupsd](http://www.apcupsd.org/) Network Informati
 ```sh
 go build ./...                                  # compile check, writes no binary
 go test -race ./...                             # what CI runs
-go test -run 'TestUPSCollector/full' -v .       # single table case; root package holds all tests today
+go test -run 'TestUPSCollector/full' -v .       # single table case in the root package
 go vet ./...
 staticcheck ./...                               # CI installs honnef.co/go/tools/cmd/staticcheck@latest
-gofmt -l .                                      # not in CI yet; flags cmd/apcupsd_exporter/main.go (F9)
+gofmt -l .                                      # must print nothing; not in CI yet
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
 docker build -t apcupsd_exporter .
 ```
@@ -27,7 +27,7 @@ You can smoke-test without a UPS. With an unreachable `-apcupsd.addr`, the expor
 
 Three layers, each constructing the next:
 
-1. `cmd/apcupsd_exporter/main.go` parses flags, registers an `Exporter` on the default Prometheus registry, and serves HTTP. It supplies a `ClientFunc` that dials the NIS.
+1. `cmd/apcupsd_exporter/main.go` parses flags, validates `-telemetry.path`, and serves HTTP. `newHandler` registers an `Exporter` on a private Prometheus registry and routes on a private `ServeMux`. `newServer` sets the HTTP timeouts. `newClient` supplies the `ClientFunc` that dials the NIS.
 2. `apcupsdexporter.go`: `Exporter` is stateless. Every `Collect` creates a 5s context, dials a new connection, builds a new `UPSCollector`, runs it, and closes the connection. Nothing is cached between scrapes.
 3. `upscollector.go`: `UPSCollector` turns one `apcupsd.Status` into const metrics. It reads through the `StatusSource` interface, which is also the test seam (`testStatusSource`).
 
@@ -37,15 +37,18 @@ Behaviour that spans these layers:
 - **One bad field fails the scrape.** The library's `Status()` returns an error if any single NIS field fails to parse.
 - **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero (F5).
 - **`Exporter.Describe` touches the network.** It dials the NIS, so registration blocks on it and the collector is only checked if the daemon was up at startup (F2).
-- **The 5s timeout covers the dial only.** `Client.Status()` has no deadline (F1).
-- **`/` is a catch-all 301 to the metrics path.** Any route not explicitly registered redirects there, so a redirect-following client ends up on `/metrics`, which dials apcupsd. `-telemetry.path=/` panics at startup with a duplicate mux registration, and any new route has the same conflict if `-telemetry.path` is set to it.
-- **`-metrics.system=false` is only partial.** `promhttp_metric_handler_*` stays in the output (F3).
+- **The 5s timeout covers the whole NIS exchange.** `newClient` copies the context deadline onto the connection, so the same 5s bounds the dial and `Client.Status()`. That deadline is the only thing that frees a stuck `Status()`: the library holds a lock while reading, so `Client.Close()` blocks behind it instead of interrupting it. Any `ClientFunc` must set a connection deadline.
+- **`/` is a catch-all 301 to the metrics path.** Any route not explicitly registered redirects there, so a redirect-following client ends up on `/metrics`, which dials apcupsd. `validateMetricsPath` rejects `/` and `/healthz` at startup, because they would collide with a route, and anything the mux can't serve as a plain literal path. A new route must be added to its reserved list.
+- **`-metrics.system=false` leaves only `apcupsd_*`.** The go and process collectors and the promhttp instrumentation are added only when the flag is true, and then match what the default registry exposes. `HandlerOpts.Registry` stays unset, because it adds `promhttp_metric_handler_errors_total`.
+- **A failed gather is logged.** `HandlerOpts.ErrorLog` logs what promhttp turns into a 500.
+- **The write timeout must outlast the scrape limit.** `WriteTimeout` is 15s against the 5s limit; below that, a slow scrape gets a dropped connection instead of a 500.
 
 ## Testing notes
 
-- All tests run the collector through `testCollector`, which uses a `PedanticRegistry` and matches regexes against the HTTP response body.
+- The root package's tests run the collector through `testCollector`, which uses a `PedanticRegistry` and matches regexes against the HTTP response body.
 - `testCollector` doesn't check the status code. A case with no `matches`, such as `empty`, only catches panics.
-- `cmd/` has no tests yet.
+- `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s by design.
+- `client_golang` exposes no `process_*` families on macOS, so a test may only require them on Linux.
 - A fake NIS must speak the wire protocol: each message has a 2-byte big-endian length prefix, and a zero-length message ends the response. `apcupsd.New(rwc)` adds this framing to whatever it wraps, so pass it the raw connection.
 
 ## Adding a metric
@@ -67,14 +70,14 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, the `-metrics.system` flag in `main.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
 These are declared preferences; they override the superpowers skills' defaults.
 
 - **Worktrees are owned by Paseo** (`paseo.json` runs `go mod download` on creation; they live under `~/.paseo/worktrees/`). If already in a linked worktree, work there. Never use `EnterWorktree` or `git worktree add`. From the main checkout, create a Paseo worktree (`paseo worktree create --mode branch-off --new-branch <name>`, or `mcp__paseo__create_workspace`), because the main checkout may be shared with other agents. Don't run `go get` or `go mod tidy` in a worktree unless the work is a dependency update; if dependencies are missing, run `go mod download`. After removing a worktree outside Paseo, run `scripts/lumen-prune.sh`.
-- **Baseline / verification** is `go test -race ./...` and `go vet ./...`. Add `gofmt -l .` once F9 is fixed.
+- **Baseline / verification** is `go test -race ./...`, `go vet ./...`, and an empty `gofmt -l .`.
 - **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
 - **Specs** go in `docs/specs/YYYY-MM-DD-<feature>.md`, committed as `docs:` on the feature branch. Issue #1 is the spec for `v0.4.0`, so don't write a second one for that work. Specs are public, so the generic-project rule applies to them.
 - **Plans** and other agent workflow artifacts **never** get committed into the tree.
