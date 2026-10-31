@@ -1,0 +1,11 @@
+{
+  "worktree": {
+    "setup": "go mod download",
+    "teardown": "scripts/lumen-prune.sh \"$PASEO_WORKTREE_PATH\" || true"
+  },
+  "scripts": {
+    "test": {
+      "command": "go test -race ./..."
+    }
+  }
+}

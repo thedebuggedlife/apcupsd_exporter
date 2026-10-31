@@ -1,0 +1,7 @@
+# Agent tooling: .claude/ is ignored except what is shared on purpose
+.claude/*
+!.claude/settings.json
+.worktrees/
+
+# Binary from `go build ./cmd/apcupsd_exporter`
+/apcupsd_exporter
