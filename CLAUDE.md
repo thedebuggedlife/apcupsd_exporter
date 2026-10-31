@@ -19,7 +19,7 @@ go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
 docker build -t apcupsd_exporter .
 ```
 
-There is no Makefile and no `.gitignore`. `go build ./cmd/apcupsd_exporter` drops a binary in the repo root, so use `-o` to put it elsewhere.
+There is no Makefile.
 
 You can smoke-test without a UPS. With an unreachable `-apcupsd.addr`, the exporter starts normally and `/metrics` returns 500.
 
@@ -55,8 +55,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 ## Rules for this fork
 
 - **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes. The only metric change in `v0.4.0` is the new `apcupsd_output_amps`, which arrives with the upstream merge.
-- **Stop before the first push to `main`.** The open PR `upstream #33` uses this fork's `main` as its head branch, so every push adds commits to that PR. Get the maintainer's decision first (issue #1 recommends closing it), and don't close it without that decision.
-- **Pushing a branch can publish an image today.** `docker-build.yml` runs after `Linux Test` succeeds on any branch, then pushes `latest` built from the default branch (F6).
+- **Keep the `Docker Build` workflow disabled until step 5 replaces it.** While enabled, it runs after `Linux Test` succeeds on any branch, then pushes `latest` built from the default branch (F6). No images publish in the meantime.
 - **Never touch upstream.** No PRs, issues, or pushes. `gh` can resolve to the parent repo on a fork, so check with `gh repo set-default --view` and pass `--repo thedebuggedlife/apcupsd_exporter` when in doubt.
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline.
 - **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Push tags by name.
@@ -68,4 +67,14 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, and the `-metrics.system` flag in `main.go`. Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, the `-metrics.system` flag in `main.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+
+## Agent workflow (superpowers + Paseo)
+
+These are declared preferences; they override the superpowers skills' defaults.
+
+- **Worktrees are owned by Paseo** (`paseo.json` runs `go mod download` on creation; they live under `~/.paseo/worktrees/`). If already in a linked worktree, work there. Never use `EnterWorktree` or `git worktree add`. From the main checkout, create a Paseo worktree (`paseo worktree create --mode branch-off --new-branch <name>`, or `mcp__paseo__create_workspace`), because the main checkout may be shared with other agents. Don't run `go get` or `go mod tidy` in a worktree unless the work is a dependency update; if dependencies are missing, run `go mod download`. After removing a worktree outside Paseo, run `scripts/lumen-prune.sh`.
+- **Baseline / verification** is `go test -race ./...` and `go vet ./...`. Add `gofmt -l .` once F9 is fixed.
+- **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
+- **Specs** go in `docs/specs/YYYY-MM-DD-<feature>.md`, committed as `docs:` on the feature branch. Issue #1 is the spec for `v0.4.0`, so don't write a second one for that work. Specs are public, so the generic-project rule applies to them.
+- **Plans** and other agent workflow artifacts **never** get committed into the tree.
