@@ -1,5 +1,5 @@
 # apcupsd_exporter 
-[![Linux Test](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/linux-test.yml/badge.svg?branch=main)](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/linux-test.yml) [![Docker Build](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/docker-build.yml/badge.svg?branch=main)](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/docker-build.yml) [![GoDoc](http://godoc.org/github.com/mdlayher/apcupsd_exporter?status.svg)](http://godoc.org/github.com/mdlayher/apcupsd_exporter)
+[![CI](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/thedebuggedlife/apcupsd_exporter/actions/workflows/ci.yml) [![GoDoc](http://godoc.org/github.com/mdlayher/apcupsd_exporter?status.svg)](http://godoc.org/github.com/mdlayher/apcupsd_exporter)
 
 Command `apcupsd_exporter` provides a Prometheus exporter for the
 [apcupsd](http://www.apcupsd.org/) Network Information Server (NIS). MIT

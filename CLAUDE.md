@@ -10,11 +10,12 @@ Prometheus exporter for the [apcupsd](http://www.apcupsd.org/) Network Informati
 
 ```sh
 go build ./...                                  # compile check, writes no binary
-go test -race ./...                             # what CI runs
+go test -race ./...                             # the CI test job
 go test -run 'TestUPSCollector/full' -v .       # single table case in the root package
 go vet ./...
-staticcheck ./...                               # CI installs honnef.co/go/tools/cmd/staticcheck@latest
-gofmt -l .                                      # must print nothing; not in CI yet
+staticcheck ./...                               # CI pins the version in ci.yml
+govulncheck ./...                               # CI pins the version in ci.yml
+gofmt -l .                                      # must print nothing; the CI lint job fails otherwise
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
 go run ./cmd/apcupsd_exporter -healthcheck      # probes /healthz on -telemetry.addr, exits 0 or 1
 go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:3551; -addr changes it
@@ -69,12 +70,12 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 ## Rules for this fork
 
 - **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes. The only metric change in `v0.4.0` is the new `apcupsd_output_amps`, which arrives with the upstream merge.
-- **Keep the `Docker Build` workflow disabled until step 5 replaces it.** While enabled, it runs after `Linux Test` succeeds on any branch, then pushes `latest` built from the default branch (F6). No images publish in the meantime.
+- **`latest` moves only on a release tag.** `ci.yml` publishes `edge` and the full commit SHA from a `main` push. A strict `vX.Y.Z` tag on a commit already on `main` publishes `vX.Y.Z`, `latest` and the full commit SHA, then creates the GitHub Release. Publishing needs `test`, `lint` and `vuln`, and never `image`, which is PR-only: a skipped need would skip `publish`.
 - **Never touch upstream.** No PRs, issues, or pushes. `gh` can resolve to the parent repo on a fork, so check with `gh repo set-default --view` and pass `--repo thedebuggedlife/apcupsd_exporter` when in doubt.
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline.
-- **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Push tags by name.
+- **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Release by pushing the tag by name: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 - **Keep the project generic.** Code, docs, commits, PRs, and issues must not refer to a specific deployment, host, network, or person's infrastructure. Use placeholder addresses in examples.
-- **One Go version.** `go.mod`, `linux-test.yml`, `static-analysis.yml` and the `Dockerfile` must name the same release. Both `Dockerfile` base images are pinned to a version plus multi-arch index digest, so bump them together.
+- **One Go version.** `go.mod` and the `Dockerfile` must name the same release; `ci.yml` reads `go.mod` through `go-version-file`. Both `Dockerfile` base images are pinned to a version plus multi-arch index digest, so bump them together.
 - **Keep the module path** `github.com/mdlayher/apcupsd_exporter`. It has no runtime effect and keeps upstream merges cheap.
 - **Keep `upscollector.go` changes small** so future upstream merges stay easy.
 
@@ -89,7 +90,7 @@ Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workfl
 These are declared preferences; they override the superpowers skills' defaults.
 
 - **Worktrees are owned by Paseo** (`paseo.json` runs `go mod download` on creation; they live under `~/.paseo/worktrees/`). If already in a linked worktree, work there. Never use `EnterWorktree` or `git worktree add`. From the main checkout, create a Paseo worktree (`paseo worktree create --mode branch-off --new-branch <name>`, or `mcp__paseo__create_workspace`), because the main checkout may be shared with other agents. Don't run `go get` or `go mod tidy` in a worktree unless the work is a dependency update; if dependencies are missing, run `go mod download`. After removing a worktree outside Paseo, run `scripts/lumen-prune.sh`.
-- **Baseline / verification** is `go test -race ./...`, `go vet ./...`, and an empty `gofmt -l .`.
+- **Baseline / verification** is what the CI `test`, `lint` and `vuln` jobs run: `go test -race ./...`, an empty `gofmt -l .`, `go vet ./...`, `staticcheck ./...` and `govulncheck ./...`.
 - **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
 - **Specs** go in `docs/specs/YYYY-MM-DD-<feature>.md`, committed as `docs:` on the feature branch. Issue #1 is the spec for `v0.4.0`, so don't write a second one for that work. Specs are public, so the generic-project rule applies to them.
 - **Plans** and other agent workflow artifacts **never** get committed into the tree.
