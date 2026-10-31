@@ -94,8 +94,8 @@ Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`. Pin a
 |---|---|
 | `vX.Y.Z` | A release. Published once and not moved; a fix ships as a newer tag |
 | `latest` | The most recent release to be published. It moves only when a release is tagged, never on a push to `main` |
-| `edge` | The newest build of `main`, from a push or the weekly rebuild. It is not a release |
-| Full commit SHA | The build of that commit. The weekly rebuild can give the same tag a new digest |
+| `edge` | The newest build of `main`. It is not a release |
+| Full commit SHA | The build of that commit |
 
 Every tag covers all three platforms. The GitHub
 [releases](https://github.com/thedebuggedlife/apcupsd_exporter/releases) list what
