@@ -10,9 +10,10 @@ import (
 
 func TestUPSCollector(t *testing.T) {
 	tests := []struct {
-		desc    string
-		ss      *testStatusSource
-		matches []*regexp.Regexp
+		desc       string
+		ss         *testStatusSource
+		matches    []*regexp.Regexp
+		notMatches []*regexp.Regexp
 	}{
 		{
 			desc: "empty",
@@ -69,6 +70,21 @@ func TestUPSCollector(t *testing.T) {
 				regexp.MustCompile(`apcupsd_internal_temperature_celsius{ups="bar"} 26.4`),
 			},
 		},
+		{
+			desc: "output amps not reported",
+			ss: &testStatusSource{
+				s: &apcupsd.Status{
+					UPSName:       "bar",
+					OutputVoltage: 120.9,
+				},
+			},
+			matches: []*regexp.Regexp{
+				regexp.MustCompile(`apcupsd_output_volts{ups="bar"} 120.9`),
+			},
+			notMatches: []*regexp.Regexp{
+				regexp.MustCompile(`apcupsd_output_amps`),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -78,6 +94,12 @@ func TestUPSCollector(t *testing.T) {
 			for _, m := range tt.matches {
 				if !m.Match(out) {
 					t.Fatalf("output failed to match regex (regexp: %v)", m)
+				}
+			}
+
+			for _, m := range tt.notMatches {
+				if m.Match(out) {
+					t.Fatalf("output unexpectedly matched regex (regexp: %v):\n%s", m, out)
 				}
 			}
 		})

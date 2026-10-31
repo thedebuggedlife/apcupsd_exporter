@@ -259,12 +259,15 @@ func (c *UPSCollector) Collect(ch chan<- prometheus.Metric) {
 		s.UPSName,
 	)
 
-	ch <- prometheus.MustNewConstMetric(
-		c.OutputAmps,
-		prometheus.GaugeValue,
-		s.OutputAmps,
-		s.UPSName,
-	)
+	// An unreported OUTCURNT parses as 0, so a true 0 A reading is omitted too.
+	if s.OutputAmps > 0 {
+		ch <- prometheus.MustNewConstMetric(
+			c.OutputAmps,
+			prometheus.GaugeValue,
+			s.OutputAmps,
+			s.UPSName,
+		)
+	}
 
 	ch <- prometheus.MustNewConstMetric(
 		c.BatteryVolts,
