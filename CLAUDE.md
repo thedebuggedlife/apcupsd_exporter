@@ -16,12 +16,13 @@ go vet ./...
 staticcheck ./...                               # CI installs honnef.co/go/tools/cmd/staticcheck@latest
 gofmt -l .                                      # must print nothing; not in CI yet
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
+go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:3551; -addr changes it
 docker build -t apcupsd_exporter .
 ```
 
 There is no Makefile.
 
-You can smoke-test without a UPS. With an unreachable `-apcupsd.addr`, the exporter starts normally and `/metrics` returns 500.
+You can smoke-test without a UPS. With an unreachable `-apcupsd.addr`, the exporter starts normally and `/metrics` returns 500. Against the fake NIS, `/metrics` returns 200.
 
 ## Architecture
 
@@ -33,10 +34,10 @@ Three layers, each constructing the next:
 
 Behaviour that spans these layers:
 
-- **Failure is all-or-nothing.** A dial or `Status()` error becomes `prometheus.NewInvalidMetric`, which fails the gather, so promhttp returns 500 for the whole page, including `go_*` and `process_*`. Prometheus records this as `up == 0`. `NewUPSCollector(nil).Info` in `Exporter.Collect` exists only to get a `Desc` for that error, and a nil-source collector must never have `Collect` called.
+- **Failure is all-or-nothing.** A dial or `Status()` error becomes `prometheus.NewInvalidMetric`, which fails the gather, so promhttp returns 500 for the whole page, including `go_*` and `process_*`. Prometheus records this as `up == 0`. `NewUPSCollector(nil)` exists only to supply `Desc`s, for `Exporter.Describe` and for that error, and a nil-source collector must never have `Collect` called.
 - **One bad field fails the scrape.** The library's `Status()` returns an error if any single NIS field fails to parse.
-- **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero (F5).
-- **`Exporter.Describe` touches the network.** It dials the NIS, so registration blocks on it and the collector is only checked if the daemon was up at startup (F2).
+- **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero. The one exception is `apcupsd_output_amps`, which is omitted unless it is above 0, so a true 0 A reading is omitted too.
+- **`Exporter.Describe` is static.** It sends descriptors without touching the network, so registration never blocks on the NIS and the collector is always checked.
 - **The 5s timeout covers the whole NIS exchange.** `newClient` copies the context deadline onto the connection, so the same 5s bounds the dial and `Client.Status()`. That deadline is the only thing that frees a stuck `Status()`: the library holds a lock while reading, so `Client.Close()` blocks behind it instead of interrupting it. Any `ClientFunc` must set a connection deadline.
 - **`/` is a catch-all 301 to the metrics path.** Any route not explicitly registered redirects there, so a redirect-following client ends up on `/metrics`, which dials apcupsd. `validateMetricsPath` rejects `/` and `/healthz` at startup, because they would collide with a route, and anything the mux can't serve as a plain literal path. A new route must be added to its reserved list.
 - **`-metrics.system=false` leaves only `apcupsd_*`.** The go and process collectors and the promhttp instrumentation are added only when the flag is true, and then match what the default registry exposes. `HandlerOpts.Registry` stays unset, because it adds `promhttp_metric_handler_errors_total`.
@@ -45,15 +46,17 @@ Behaviour that spans these layers:
 
 ## Testing notes
 
-- The root package's tests run the collector through `testCollector`, which uses a `PedanticRegistry` and matches regexes against the HTTP response body.
-- `testCollector` doesn't check the status code. A case with no `matches`, such as `empty`, only catches panics.
+- The root package's collector tests scrape through `testCollector`, which uses a `PedanticRegistry` and fails unless the response is 200. Tests that expect a failed scrape use `testCollectorStatus`.
+- A table case with no `matches`, such as `empty`, only proves the gather succeeds.
+- `TestOutputBaseline` runs raw NIS text through the fake NIS, the real client, the `Exporter` and promhttp, and compares the whole response with `testdata/golden/`. Those files came from the `v0.3.0` binary (`3f531e59`), with the `apcupsd_output_amps` lines added by hand. Never regenerate them from the working tree: a difference there means a frozen metric changed.
 - `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s by design.
 - `client_golang` exposes no `process_*` families on macOS, so a test may only require them on Linux.
-- A fake NIS must speak the wire protocol: each message has a 2-byte big-endian length prefix, and a zero-length message ends the response. `apcupsd.New(rwc)` adds this framing to whatever it wraps, so pass it the raw connection.
+- `internal/fakenis` is the fake NIS, in-process through `fakenis.Listen` or standalone through `internal/fakenis/cmd/fakenis`. Canned responses are the files in `internal/fakenis/responses/`, chosen by name. Any new fake must speak the same wire protocol: each message has a 2-byte big-endian length prefix, and a zero-length message ends the response. `apcupsd.New(rwc)` adds this framing to whatever it wraps, so pass it the raw connection.
+- The `oversized` response panics the real client (O3), which crashes a test binary until step 3's `client_golang` upgrade. Until then, read it with raw framing only.
 
 ## Adding a metric
 
-A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` in `NewUPSCollector`, the list in `Describe`, and the send in `Collect`. Then add a regex to the `full` test case. Without that regex, a mistake that fails the gather still passes the tests.
+A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` in `NewUPSCollector`, the list in `Describe`, and the send in `Collect`. Then add a regex to the `full` test case, the name to `TestExporterDescribeDoesNotDial`, and the metric's lines by hand to the golden files.
 
 ## Rules for this fork
 
@@ -70,7 +73,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 

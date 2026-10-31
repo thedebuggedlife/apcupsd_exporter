@@ -1,0 +1,54 @@
+# HELP apcupsd_battery_charge_percent Current UPS battery charge percentage.
+# TYPE apcupsd_battery_charge_percent gauge
+apcupsd_battery_charge_percent{ups="example-ups"} 98
+# HELP apcupsd_battery_cumulative_time_on_seconds_total Total number of seconds the UPS has provided battery power due to AC input line outages.
+# TYPE apcupsd_battery_cumulative_time_on_seconds_total counter
+apcupsd_battery_cumulative_time_on_seconds_total{ups="example-ups"} 90
+# HELP apcupsd_battery_nominal_volts Nominal UPS battery voltage.
+# TYPE apcupsd_battery_nominal_volts gauge
+apcupsd_battery_nominal_volts{ups="example-ups"} 12
+# HELP apcupsd_battery_number_transfers_total Total number of transfers to UPS battery power.
+# TYPE apcupsd_battery_number_transfers_total counter
+apcupsd_battery_number_transfers_total{ups="example-ups"} 4
+# HELP apcupsd_battery_time_left_seconds Number of seconds remaining of UPS battery power.
+# TYPE apcupsd_battery_time_left_seconds gauge
+apcupsd_battery_time_left_seconds{ups="example-ups"} 2550
+# HELP apcupsd_battery_time_on_seconds Number of seconds the UPS has been providing battery power due to an AC input line outage.
+# TYPE apcupsd_battery_time_on_seconds gauge
+apcupsd_battery_time_on_seconds{ups="example-ups"} 15
+# HELP apcupsd_battery_volts Current UPS battery voltage.
+# TYPE apcupsd_battery_volts gauge
+apcupsd_battery_volts{ups="example-ups"} 13.6
+# HELP apcupsd_info Metadata about a given UPS.
+# TYPE apcupsd_info gauge
+apcupsd_info{hostname="example-host",model="Example UPS 1500",status="ONLINE",ups="example-ups"} 1
+# HELP apcupsd_internal_temperature_celsius Internal temperature in °C.
+# TYPE apcupsd_internal_temperature_celsius gauge
+apcupsd_internal_temperature_celsius{ups="example-ups"} 28.5
+# HELP apcupsd_last_selftest_time_seconds UNIX timestamp of last selftest since apcupsd startup.
+# TYPE apcupsd_last_selftest_time_seconds gauge
+apcupsd_last_selftest_time_seconds{ups="example-ups"} 1.7041068e+09
+# HELP apcupsd_last_transfer_off_battery_time_seconds UNIX timestamp of last transfer from battery since apcupsd startup.
+# TYPE apcupsd_last_transfer_off_battery_time_seconds gauge
+apcupsd_last_transfer_off_battery_time_seconds{ups="example-ups"} 1.70412843e+09
+# HELP apcupsd_last_transfer_on_battery_time_seconds UNIX timestamp of last transfer to battery since apcupsd startup.
+# TYPE apcupsd_last_transfer_on_battery_time_seconds gauge
+apcupsd_last_transfer_on_battery_time_seconds{ups="example-ups"} 1.7041284e+09
+# HELP apcupsd_line_nominal_volts Nominal AC input line voltage.
+# TYPE apcupsd_line_nominal_volts gauge
+apcupsd_line_nominal_volts{ups="example-ups"} 120
+# HELP apcupsd_line_volts Current AC input line voltage.
+# TYPE apcupsd_line_volts gauge
+apcupsd_line_volts{ups="example-ups"} 121.5
+# HELP apcupsd_nominal_power_watts Nominal power output in watts.
+# TYPE apcupsd_nominal_power_watts gauge
+apcupsd_nominal_power_watts{ups="example-ups"} 900
+# HELP apcupsd_output_amps Current AC output amperage.
+# TYPE apcupsd_output_amps gauge
+apcupsd_output_amps{ups="example-ups"} 0.96
+# HELP apcupsd_output_volts Current AC output voltage.
+# TYPE apcupsd_output_volts gauge
+apcupsd_output_volts{ups="example-ups"} 119.5
+# HELP apcupsd_ups_load_percent Current UPS load percentage.
+# TYPE apcupsd_ups_load_percent gauge
+apcupsd_ups_load_percent{ups="example-ups"} 16
