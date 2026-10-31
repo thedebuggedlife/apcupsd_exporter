@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -76,7 +78,7 @@ jobs:
   publish:
     # image is PR-only, and a skipped job in needs would skip this one.
     needs: [test, lint, vuln]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')) || (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: read

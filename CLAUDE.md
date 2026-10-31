@@ -70,7 +70,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 ## Rules for this fork
 
 - **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes. The only metric change in `v0.4.0` is the new `apcupsd_output_amps`, which arrives with the upstream merge.
-- **`latest` moves only on a release tag.** `ci.yml` publishes `edge` and the full commit SHA from a `main` push. A strict `vX.Y.Z` tag on a commit already on `main` publishes `vX.Y.Z`, `latest` and the full commit SHA, then creates the GitHub Release. Publishing needs `test`, `lint` and `vuln`, and never `image`, which is PR-only: a skipped need would skip `publish`.
+- **`latest` moves only on a release tag.** `ci.yml` publishes `edge` and the full commit SHA from a `main` push or the weekly schedule. A strict `vX.Y.Z` tag on a commit already on `main` publishes `vX.Y.Z`, `latest` and the full commit SHA, then creates the GitHub Release. Publishing needs `test`, `lint` and `vuln`, and never `image`, which is PR-only: a skipped need would skip `publish`.
 - **Never touch upstream.** No PRs, issues, or pushes. `gh` can resolve to the parent repo on a fork, so check with `gh repo set-default --view` and pass `--repo thedebuggedlife/apcupsd_exporter` when in doubt.
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline.
 - **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Release by pushing the tag by name: `git tag vX.Y.Z && git push origin vX.Y.Z`.
@@ -79,11 +79,33 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 - **Keep the module path** `github.com/mdlayher/apcupsd_exporter`. It has no runtime effect and keeps upstream merges cheap.
 - **Keep `upscollector.go` changes small** so future upstream merges stay easy.
 
+## Dependabot
+
+`.github/dependabot.yml` opens weekly version updates for `gomod`, `github-actions` and `docker`, with minor and patch updates grouped. `.github/workflows/dependabot-auto-merge.yml` enables auto-merge on a narrow set of security updates. It is separate from `ci.yml` so that its write token stays away from `publish`.
+
+- **What auto-merges:** a Dependabot security update to Go modules where every updated module moves at patch or minor level between plain `X.Y.Z` releases.
+- **What stays manual:** majors, version updates, `github-actions`, `docker`, pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases and `+incompatible` versions. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
+- **How a security update is recognised:** the PR is in the `go-security` group, or it is ungrouped and every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API and the job's `vulnerability-alerts: read`, so it needs no stored token. `fetch-metadata`'s own `alert-lookup` can come back empty for a Go module that has an open alert, so it isn't used.
+- **Anything unclear does nothing.** Missing metadata or a failed alert lookup fails a step, which leaves auto-merge off. The job isn't a required check, so a failure here doesn't block the PR.
+- **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks.
+- **`actionlint` doesn't know `vulnerability-alerts` yet.** Run it with `-ignore 'unknown permission scope "vulnerability-alerts"'`.
+- **The weekly `schedule` in `ci.yml` stands in for missed pushes.** A merge made with `GITHUB_TOKEN` isn't expected to trigger `on: push`, so CI wouldn't run on `main` and `edge` wouldn't rebuild. The schedule publishes `edge` and the full commit SHA like a `main` push, never `latest`, and re-pushing that SHA tag can give it a new digest.
+
+Limits:
+
+- `staticcheck` and `govulncheck` are pinned as `go run` arguments in `ci.yml`, so Dependabot can't update them. They need manual bumps.
+- A `docker` PR that moves the `golang` image must also update `go.mod`, under the one-Go-version rule.
+- `latest` can move backwards: a tag on an older commit that's on `main` passes both guards, and so does re-running an old tag's run.
+- Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure and needs a manual Go bump. The weekly run is what catches it when no PRs are open.
+- While `vuln` is failing, it blocks auto-merge too.
+- An auto-merge only reaches `main`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
+- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly runs stop, check `ci.yml`'s `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
+
 ## Upstream relationship
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. Sync with `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies.
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `scripts/test-container.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `scripts/test-container.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
