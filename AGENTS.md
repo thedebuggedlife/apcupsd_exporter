@@ -104,12 +104,12 @@ To release:
 
 How publishing is gated:
 
-- **`publish` needs `test`, `lint` and `vuln`, and never `image`.** `image` is PR-only, and a skipped job in `needs` skips everything that depends on it, so nothing would ever publish.
-- **`publish` scans before it pushes,** so a failed Trivy scan can't leave a new `latest` behind.
+- **`publish` needs `test`, `lint`, `vuln` and `scan`, and never `image`.** `image` is PR-only, and a skipped job in `needs` skips everything that depends on it, so nothing would ever publish.
+- **`scan` runs in its own read-only job and `publish` needs it,** so a failed scan can't leave a new `latest` behind and the scanner never shares a job with `packages: write`.
 - **A tag run has two guards:** the tag must be a strict `vX.Y.Z`, and the tagged commit must be on `main`.
 - **`latest` is off unless the run is for a tag.** `metadata-action` runs with `flavor: latest=false` and enables `latest` explicitly, so a `main` push can never move it.
 - **Every job that writes with `GITHUB_TOKEN` declares its own `permissions:`.** The organisation caps the default `GITHUB_TOKEN` at read-only, and that can't be changed per repo.
-- **Only a push publishes.** The weekly `schedule` runs `test`, `lint` and `vuln`, and nothing else.
+- **Only a push publishes.** The weekly `schedule` runs `test`, `lint` and `vuln`, and nothing else, so `scan` doesn't run on it either.
 
 Limits:
 
