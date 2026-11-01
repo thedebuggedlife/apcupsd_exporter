@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.5.1...v0.6.0) (2026-11-01)
+
+
+### Features
+
+* report a failed apcupsd read as apcupsd_up 0 instead of an HTTP 500 ([#30](https://github.com/thedebuggedlife/apcupsd_exporter/issues/30)) ([32bf190](https://github.com/thedebuggedlife/apcupsd_exporter/commit/32bf190cfab0cb6fa538fc522b02f1a513cc0566))
+
 ## [0.5.1](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.5.0...v0.5.1) (2026-11-01)
 
 
