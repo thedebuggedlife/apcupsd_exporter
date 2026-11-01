@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [tmp/remind-proof]
   workflow_dispatch:
   schedule:
     - cron: '23 7 * * *'
@@ -10,99 +10,7 @@ on:
 permissions: {}
 
 jobs:
-  release-please:
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: release-please
-      cancel-in-progress: false
-    defaults:
-      run:
-        shell: bash
-    env:
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - name: Check the app credentials
-        env:
-          APP_ID: ${{ vars.RELEASE_BOT_APP_ID }}
-          PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-        run: |
-          if [ -z "$APP_ID" ] || [ -z "$PRIVATE_KEY" ]; then
-            echo "::error::RELEASE_BOT_APP_ID or RELEASE_BOT_PRIVATE_KEY isn't available to this event"
-            exit 1
-          fi
-      - name: Create app token
-        id: token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
-          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-          permission-workflows: write
-      - name: Run release-please
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        with:
-          token: ${{ steps.token.outputs.token }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-      - name: Decide whether the release PR may merge
-        if: ${{ !cancelled() && steps.token.outcome == 'success' }}
-        env:
-          AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: |
-          pr="$(gh pr list --state open --limit 100 --json number,title,labels,autoMergeRequest --jq '[.[] | select(any(.labels[]; .name == "autorelease: pending"))][0] // empty')"
-          if [ -z "$pr" ]; then
-            echo "::notice::No open release PR"
-            exit 0
-          fi
-          number="$(jq -r '.number' <<< "$pr")"
-          title="$(jq -r '.title' <<< "$pr")"
-          armed="$(jq -r '.autoMergeRequest != null' <<< "$pr")"
-
-          title_re='^chore\(main\): release ([0-9]+)\.[0-9]+\.[0-9]+$'
-          title_major=
-          if [[ "$title" =~ $title_re ]]; then
-            title_major="${BASH_REMATCH[1]}"
-          fi
-
-          # A failed read must reach the hold branch, not abort the step.
-          current="$(gh api "repos/$GH_REPO/contents/.release-please-manifest.json?ref=main" --jq .content | base64 -d | jq -r '."."' || true)"
-          manifest_major=
-          if [[ "$current" =~ ^([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
-            manifest_major="${BASH_REMATCH[1]}"
-          fi
-
-          hold=
-          if [ "$AUTO_RELEASE" != on ]; then
-            hold="AUTO_RELEASE isn't set to on"
-          elif [ -z "$title_major" ]; then
-            hold="the title '$title' isn't a release title"
-          elif [ -z "$manifest_major" ]; then
-            hold="the version in the manifest on main couldn't be read"
-          elif [ "$title_major" != "$manifest_major" ]; then
-            hold="the release changes the major version from $manifest_major to $title_major"
-          fi
-
-          if [ -z "$hold" ]; then
-            if [ "$armed" = true ]; then
-              echo "::notice::PR #$number already has auto-merge on"
-            else
-              gh pr merge --auto --squash "$number"
-              echo "::notice::Turned on auto-merge for PR #$number"
-            fi
-            exit 0
-          fi
-
-          echo "::notice::PR #$number is held: $hold"
-          if [ "$armed" = true ]; then
-            gh pr merge --disable-auto "$number"
-          fi
-
   remind:
-    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -120,10 +28,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          release_pr_max_age=86400
-          go_patch_max_age=172800
-          publish_grace=7200
-          merged_pending_grace=3600
+          release_pr_max_age=0
+          go_patch_max_age=0
+          publish_grace=0
+          merged_pending_grace=0
           title='Automatic release is blocked'
           assignee=avargaskun
           label=release-blocked
@@ -160,7 +68,7 @@ jobs:
           prs="$(gh pr list --label 'autorelease: pending' --state merged --limit 100 --json number,url,mergedAt)"
           jq -r --argjson grace "$merged_pending_grace" '.[] | select(now - (.mergedAt | fromdateiso8601) > $grace) | "- Merged PR #\(.number) still carries `autorelease: pending` an hour after merging: \(.url)"' <<< "$prs" >> "$found"
 
-          runs="$(gh run list --workflow release-please.yml --event push --status completed --limit 1 --json conclusion,url)"
+          runs='[]'
           jq -r '.[] | select(.conclusion | IN("failure", "timed_out", "startup_failure")) | "- The latest push run of release-please.yml failed: \(.url)"' <<< "$runs" >> "$found"
 
           runs="$(gh run list --workflow go-toolchain.yml --event schedule --status completed --limit 1 --json conclusion,url)"
