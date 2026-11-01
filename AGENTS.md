@@ -161,7 +161,7 @@ Limits:
 - An auto-merge only reaches `main` and `edge`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
 - `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. The `cooldown` is the only delay before they run with those credentials.
 - The `cooldown` doesn't hold a digest update if the registry gives no publish date.
-- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly runs stop, check `ci.yml`'s `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
+- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly `ci.yml` runs or the daily `go-toolchain.yml` runs stop, check their `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
 
 ## Go toolchain updates
 
@@ -170,10 +170,11 @@ Dependabot's `docker` updater can't edit `go.mod`, so `.github/workflows/go-tool
 - **Targets:** `scripts/go-toolchain.sh targets` reads the `go` line in `go.mod` and the stable releases from `https://go.dev/dl/?mode=json`. The patch target is the newest release on the current `X.Y`, and the minor target is the newest with a greater `X.Y`. Both can exist at once, as a matrix of two jobs.
 - **Two PRs on fixed branches:** `automation/go-patch` and `automation/go-minor`, each a single commit from `main` titled `fix(deps): bump Go to X.Y.Z`, so both release as a patch. `apply` sets `go.mod`, the `golang` tag and index digest in the `Dockerfile`, and refreshes the distroless digest on the same tag. A newer target force-pushes the same branch.
 - **Waiting for the image:** a target counts only once `golang:<version>-trixie` is published. Until then the run notices and stops, which isn't a failure.
-- **No change when nothing is new.** An open PR with the right title is left alone, so CI doesn't re-run each day. A PR that GitHub reports as `CONFLICTING` is rebuilt from `main`, which is routine because Dependabot's digest PRs edit the same `Dockerfile` lines.
+- **No change when nothing is new.** An open PR with the right title is left alone, so CI doesn't re-run each day. A PR that GitHub reports as `CONFLICTING` is rebuilt from `main`, which is routine because Dependabot's digest PRs edit the same `Dockerfile` lines. Only a PR from a branch in this repo counts; a fork PR with the same branch name is ignored.
 - **Patch PRs get `gh pr merge --auto --squash`** and wait for the required checks. Minor PRs don't, so they need a manual merge.
+- **Patch auto-merge is re-armed on every run.** A current patch PR whose auto-merge is off gets only `gh pr merge --auto --squash`, with no rebuild or push. That retries a failed arming and also undoes a maintainer turning it off by hand, deliberately: Go patches always go automatically. To hold one, turn the `go-toolchain` workflow off in the Actions tab.
 - **Dry run:** a `workflow_dispatch` with `dry_run` (the default) prints the commit and stops before the app token is created. A schedule run is never a dry run.
-- **No token before the edits are done.** The checkout uses `persist-credentials: false`, and the job's read-only `GITHUB_TOKEN` is only given to `gh pr list`. The app token is created after the commit, and only the push and `gh` steps receive it.
+- **No token before the edits are done.** The checkout uses `persist-credentials: false`, and the job's read-only `GITHUB_TOKEN` is used by the checkout, which doesn't persist it, and by `gh pr list`. The app token is created after the commit, and only the push and `gh` steps receive it.
 - **Why the app token holds `workflows`:** the fixed branches survive a merge, so a later force-push can carry them across workflow changes on `main`, which GitHub may refuse without it. That failure would appear only on a later Go release.
 - **Why an app token at all:** a PR opened with `GITHUB_TOKEN` starts no CI, so the required checks would never report.
 

@@ -49,7 +49,10 @@ jobs:
           if [ -z "$version" ]; then
             echo "::notice::No $KIND Go release is newer than $current"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "title=fix(deps): bump Go to $version"
+          } >> "$GITHUB_OUTPUT"
       - name: Resolve the image digests
         id: digests
         if: steps.target.outputs.version != ''
@@ -72,27 +75,34 @@ jobs:
         if: steps.digests.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TITLE: 'fix(deps): bump Go to ${{ steps.target.outputs.version }}'
+          TITLE: ${{ steps.target.outputs.title }}
         run: |
-          open="$(gh pr list --head "$BRANCH" --state open --json number,title,mergeable)"
-          number="$(jq -r '.[0].number // empty' <<< "$open")"
+          open="$(gh pr list --head "$BRANCH" --state open --json number,title,mergeable,isCrossRepository,autoMergeRequest)"
+          pr="$(jq -c 'map(select(.isCrossRepository | not)) | .[0] // {}' <<< "$open")"
+          number="$(jq -r '.number // empty' <<< "$pr")"
+          mode=rebuild
           if [ -n "$number" ] &&
-            [ "$(jq -r '.[0].title' <<< "$open")" = "$TITLE" ] &&
-            [ "$(jq -r '.[0].mergeable' <<< "$open")" != CONFLICTING ]; then
-            echo "::notice::PR #$number is already up to date"
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            [ "$(jq -r '.title' <<< "$pr")" = "$TITLE" ] &&
+            [ "$(jq -r '.mergeable' <<< "$pr")" != CONFLICTING ]; then
+            mode=none
+            if [ "$KIND" = patch ] && [ "$(jq -r '.autoMergeRequest == null' <<< "$pr")" = true ]; then
+              mode=arm
+            fi
           fi
+          case "$mode" in
+            none) echo "::notice::PR #$number is already up to date" ;;
+            arm) echo "::notice::PR #$number is up to date but auto-merge is off" ;;
+          esac
           {
-            echo "proceed=true"
+            echo "mode=$mode"
             echo "number=$number"
           } >> "$GITHUB_OUTPUT"
       - name: Apply the update
-        if: steps.pr.outputs.proceed == 'true'
+        if: steps.pr.outputs.mode == 'rebuild'
         env:
           DISTROLESS_DIGEST: ${{ steps.digests.outputs.distroless }}
           GOLANG_DIGEST: ${{ steps.digests.outputs.golang }}
-          TITLE: 'fix(deps): bump Go to ${{ steps.target.outputs.version }}'
+          TITLE: ${{ steps.target.outputs.title }}
           VERSION: ${{ steps.target.outputs.version }}
         run: |
           scripts/go-toolchain.sh apply "$VERSION" "$GOLANG_DIGEST" "$DISTROLESS_DIGEST"
@@ -100,10 +110,16 @@ jobs:
           git -c user.name='automated-releases[bot]' -c user.email='automated-releases[bot]@users.noreply.github.com' \
             commit -m "$TITLE"
       - name: Show the planned change
-        if: steps.pr.outputs.proceed == 'true' && github.event_name == 'workflow_dispatch' && inputs.dry_run
+        if: steps.pr.outputs.mode == 'rebuild' && github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: git --no-pager show --stat -p HEAD
+      - name: Show the planned auto-merge
+        if: steps.pr.outputs.mode == 'arm' && github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          echo "::notice::Would turn on auto-merge for PR #$NUMBER"
       - name: Check the app credentials
-        if: steps.pr.outputs.proceed == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+        if: (steps.pr.outputs.mode == 'rebuild' || steps.pr.outputs.mode == 'arm') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
         env:
           APP_ID: ${{ vars.RELEASE_BOT_APP_ID }}
           PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
@@ -114,7 +130,7 @@ jobs:
           fi
       - name: Create app token
         id: token
-        if: steps.pr.outputs.proceed == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+        if: (steps.pr.outputs.mode == 'rebuild' || steps.pr.outputs.mode == 'arm') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
@@ -123,16 +139,16 @@ jobs:
           permission-pull-requests: write
           permission-workflows: write
       - name: Push the branch
-        if: steps.token.outcome == 'success'
+        if: steps.token.outcome == 'success' && steps.pr.outputs.mode == 'rebuild'
         env:
           TOKEN: ${{ steps.token.outputs.token }}
         run: git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
       - name: Open or update the PR
-        if: steps.token.outcome == 'success'
+        if: steps.token.outcome == 'success' && steps.pr.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           NUMBER: ${{ steps.pr.outputs.number }}
-          TITLE: 'fix(deps): bump Go to ${{ steps.target.outputs.version }}'
+          TITLE: ${{ steps.target.outputs.title }}
           VERSION: ${{ steps.target.outputs.version }}
         run: |
           body="Sets Go to $VERSION in go.mod and the Dockerfile, and refreshes the pinned golang and distroless image digests."
@@ -142,7 +158,7 @@ jobs:
             body="$body This is a minor Go release, so it needs a manual merge."
           fi
           if [ -n "$NUMBER" ]; then
-            gh pr edit "$NUMBER" --title "$TITLE" --body "$body"
+            gh api -X PATCH "repos/$GH_REPO/pulls/$NUMBER" -f title="$TITLE" -f body="$body"
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$body"
           fi
@@ -150,4 +166,7 @@ jobs:
         if: steps.token.outcome == 'success' && matrix.kind == 'patch'
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: gh pr merge --auto --squash "$BRANCH"
+        run: |
+          number="$(gh pr list --head "$BRANCH" --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          [ -n "$number" ] || { echo "::error::No open PR for $BRANCH"; exit 1; }
+          gh pr merge --auto --squash "$number"
