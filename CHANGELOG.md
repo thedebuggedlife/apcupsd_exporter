@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.5.0...v0.5.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* send only apcupsd_info while contact with the UPS is lost ([#28](https://github.com/thedebuggedlife/apcupsd_exporter/issues/28)) ([0ab0b6b](https://github.com/thedebuggedlife/apcupsd_exporter/commit/0ab0b6b4ea29b35523d9db4bb4bd8b7219cc58d3))
+
 ## [0.5.0](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.4.1...v0.5.0) (2026-11-01)
 
 
