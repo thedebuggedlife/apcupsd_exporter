@@ -7,8 +7,9 @@ Licensed.
 
 This is a maintained fork of
 [mdlayher/apcupsd_exporter](https://github.com/mdlayher/apcupsd_exporter) that
-publishes versioned container images. It is a drop-in replacement: it keeps
-upstream's `apcupsd_*` metric names, labels and units, and its module path.
+publishes versioned container images. It keeps upstream's `apcupsd_*` metric
+names, labels and units, and its module path, so it is a drop-in replacement
+apart from [one alerting change](#metrics).
 
 ## Differences from upstream
 
@@ -22,12 +23,14 @@ upstream's `apcupsd_*` metric names, labels and units, and its module path.
   transfer reason and `apcupsd_exporter_build_info`, listed in the
   [metric catalogue](docs/metrics.md).
 - **Disconnected UPS:** while apcupsd has lost contact with the UPS, the exporter
-  sends only `apcupsd_info` and its build info, instead of stale readings and
-  zeros. The [metric catalogue](docs/metrics.md) has the details.
+  sends no readings, instead of stale values and zeros. The
+  [metric catalogue](docs/metrics.md) has the details.
 - **`-metrics.system=false`:** leaves only the `apcupsd_*` metrics.
 - **Bounded scrapes:** the 5 second limit covers the whole NIS exchange, so a NIS
-  that accepts a connection and never answers fails the scrape instead of hanging
-  it. The HTTP server has timeouts too.
+  that accepts a connection and never answers gives `apcupsd_up 0` instead of
+  hanging the scrape. The HTTP server has timeouts too.
+- **`apcupsd_up`:** a failed read of apcupsd is a metric instead of an HTTP 500.
+  See [Metrics](#metrics).
 - **Startup:** the exporter doesn't contact apcupsd until the first scrape, and an
   invalid `-telemetry.path` is rejected with a clear error.
 - **Dependencies:** current Go and `client_golang`, kept up to date with Dependabot.
@@ -39,9 +42,16 @@ upstream's `apcupsd_*` metric names, labels and units, and its module path.
 [docs/metrics.md](docs/metrics.md) lists every metric with its type, unit, labels
 and source NIS field, and what happens when the UPS doesn't report it.
 
-When apcupsd can't be reached, `/metrics` returns an HTTP 500 and Prometheus
-records `up == 0`. When apcupsd is running but has lost contact with the UPS,
-`/metrics` returns 200 with no readings, so alert on that separately.
+**Changed in `v0.6.0`:** when the exporter can't read apcupsd, `/metrics` returns
+200 with `apcupsd_up 0`, where it used to return an HTTP 500. Prometheus `up` stays
+1 during an apcupsd outage, so an alert on `up == 0` no longer fires for one.
+Add an alert on `apcupsd_up == 0`, and keep the one on `up == 0`, which still
+covers a dead exporter and any scrape that fails. `apcupsd_up` can't report those,
+and it needs Prometheus's `scrape_timeout` to be above 5 seconds, or a silent
+apcupsd times out the scrape first.
+
+When apcupsd is running but has lost contact with the UPS, `apcupsd_up` stays 1
+and `/metrics` has no readings, so alert on that separately.
 
 ## Usage
 
@@ -127,8 +137,7 @@ image has no shell or curl, so its `HEALTHCHECK` uses this flag.
 
 Health means the exporter process is serving. An unreachable apcupsd daemon
 does **not** make the container unhealthy, because restarting the exporter
-can't fix the daemon. That failure shows up as an HTTP 500 from `/metrics`,
-which Prometheus records as `up == 0`.
+can't fix the daemon. That failure shows up as `apcupsd_up 0` from `/metrics`.
 
 `HEALTHCHECK` can't see the arguments a container runs with, so the image
 always probes the default address. If you set `-telemetry.addr`, override the

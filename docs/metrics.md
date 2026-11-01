@@ -16,13 +16,16 @@ The last column uses two terms:
 - **Omitted:** the series is missing from the response, along with its `HELP`
   and `TYPE` lines.
 
-The table describes a UPS that apcupsd can reach. Most series stop when it can't:
-see [When apcupsd loses contact with the UPS](#when-apcupsd-loses-contact-with-the-ups).
+The table describes a UPS that apcupsd can reach and a read that succeeds. See
+[When apcupsd loses contact with the UPS](#when-apcupsd-loses-contact-with-the-ups)
+and [When the exporter can't read apcupsd](#when-the-exporter-cant-read-apcupsd)
+for the other two cases, in which most series stop.
 
 ## `apcupsd_*`
 
 | Metric | Type | Unit | Labels | NIS field | When the UPS doesn't report it |
 |---|---|---|---|---|---|
+| `apcupsd_up` | gauge | 1 or 0 | none | None, set by the exporter | Always present on a successful scrape |
 | `apcupsd_info` | gauge | none, always 1 | `ups`, `hostname`, `model`, `status` | `UPSNAME`, `HOSTNAME`, `MODEL`, `STATUS` | Present, with that label empty |
 | `apcupsd_ups_load_percent` | gauge | percent, 0 to 100 | `ups` | `LOADPCT` | Reads 0 |
 | `apcupsd_battery_charge_percent` | gauge | percent, 0 to 100 | `ups` | `BCHARGE` | Reads 0 |
@@ -61,6 +64,9 @@ see [When apcupsd loses contact with the UPS](#when-apcupsd-loses-contact-with-t
   temperature sensor.
 - **`ups` comes from `UPSNAME` on every metric that has it.** A UPS that doesn't
   report it gets `ups=""`, which Prometheus treats the same as no `ups` label.
+- **`apcupsd_up` says whether the exporter read a complete status from apcupsd.**
+  It says nothing about the UPS. It has no `ups` label, because that name comes
+  from the status it may not have read.
 - **`status` is the raw `STATUS` text,** so each change of state starts a new
   `apcupsd_info` series.
 - **`reason` is the raw `LASTXFER` text,** so each new reason starts a new
@@ -103,10 +109,11 @@ lost during an outage. Pair it with `absent()` if that matters.
 ## When apcupsd loses contact with the UPS
 
 While `STATUS` shows `COMMLOST`, or `STATFLAG` has the same bit set, the only
-`apcupsd_*` metrics sent are `apcupsd_info` and `apcupsd_exporter_build_info`.
-The scrape still returns 200, so Prometheus records `up == 1`. To alert on this,
-use `absent()` on another metric. `apcupsd_info{status=~".*COMMLOST.*"}` also
-works, except during a shutdown, when `STATUS` reads `SHUTTING DOWN` instead.
+`apcupsd_*` metrics sent are `apcupsd_info`, `apcupsd_up` and
+`apcupsd_exporter_build_info`. `apcupsd_up` stays 1, because the status was read
+in full. To alert on this, use `absent()` on another metric.
+`apcupsd_info{status=~".*COMMLOST.*"}` also works, except during a shutdown, when
+`STATUS` reads `SHUTTING DOWN` instead.
 
 Every other series stops, because none of the values can be trusted in this
 state. With a USB UPS, unplugging the cable shows two stages:
@@ -118,13 +125,18 @@ state. With a USB UPS, unplugging the cable shows two stages:
 The series return on the first scrape after contact is restored. `status` and
 `model` on `apcupsd_info` change in those states, so each one is a new series.
 
-## When a scrape fails
+## When the exporter can't read apcupsd
 
-Failure is all-or-nothing. In each of these cases the whole response is an HTTP
-500, including the `go_*` and `process_*` families, and Prometheus records
-`up == 0`:
+`/metrics` returns 200 with `apcupsd_up 0`. Prometheus records `up == 1`, so alert
+on `apcupsd_up == 0`. `apcupsd_exporter_build_info` is still sent, as are the
+`go_*`, `process_*` and `promhttp_*` families with `-metrics.system=true`, and no
+other `apcupsd_*` series is. The reason is in the exporter's log. This happens
+when:
 
 - apcupsd can't be reached, or doesn't finish answering within 5 seconds.
+- The response stops before `END APC`, the line apcupsd always sends last. A TCP
+  forwarder with a dead backend does this: it accepts the connection and closes
+  it.
 - Any NIS field fails to parse, even one no metric uses, such as `LOTRANS`. That
   covers:
   - a number field that holds something else, including `N/A`
@@ -133,12 +145,22 @@ Failure is all-or-nothing. In each of these cases the whole response is an HTTP
     such as `5` or `1 Hours`
   - a timestamp that is neither `YYYY-MM-DD HH:MM:SS +ZZZZ` nor `N/A`
   - a line with no colon
-- A single NIS message is over 256 bytes. This panics in the library. The panic
-  is recovered, so only that scrape fails and the exporter keeps running.
 
-Three kinds of field can't fail a scrape: unknown keys are ignored, so is an
+Three kinds of field can't cause this: unknown keys are ignored, so is an
 unparsable `ALARMDEL`, and an unusable `BATTDATE` or `STATFLAG` only omits the
 metrics that use it.
+
+## When a scrape fails
+
+Two things still fail the whole scrape, because they panic. The panic is
+recovered, so the exporter keeps running, but the response is an HTTP 500,
+including the `go_*` and `process_*` families. Prometheus records `up == 0`, and
+`apcupsd_up` isn't sent.
+
+- A single NIS message is over 256 bytes, which panics in the library. Only that
+  scrape fails.
+- A value that becomes a label isn't valid UTF-8, such as `HOSTNAME` or `LASTXFER`.
+  Every scrape fails for as long as apcupsd sends that value.
 
 ## `go_*`, `process_*` and `promhttp_*`
 

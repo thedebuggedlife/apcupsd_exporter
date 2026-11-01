@@ -71,12 +71,9 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			c.Collect(ch)
 		}
 	})
-	// This is a hack but it allows us to report failure to dial without
-	// reworking significant portions of the code.
 	if err != nil {
 		log.Println(err)
-		ch <- prometheus.NewInvalidMetric(NewUPSCollector(nil).Info, err)
-		return
+		ch <- prometheus.MustNewConstMetric(NewUPSCollector(nil).Up, prometheus.GaugeValue, 0)
 	}
 }
 

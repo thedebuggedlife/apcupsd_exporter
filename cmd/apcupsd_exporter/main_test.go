@@ -116,10 +116,11 @@ func serveStatus(c net.Conn) {
 		return
 	}
 
-	msg := []byte("UPSNAME  : ups1\n")
 	var b bytes.Buffer
-	_ = binary.Write(&b, binary.BigEndian, uint16(len(msg)))
-	b.Write(msg)
+	for _, msg := range []string{"UPSNAME  : ups1\n", "END APC  : 2024-01-02 03:04:06 -0500\n"} {
+		_ = binary.Write(&b, binary.BigEndian, uint16(len(msg)))
+		b.WriteString(msg)
+	}
 	_ = binary.Write(&b, binary.BigEndian, uint16(0))
 	_, _ = c.Write(b.Bytes())
 }
@@ -206,7 +207,7 @@ func TestNewClientAppliesContextDeadlineToStatus(t *testing.T) {
 	}
 }
 
-func TestScrapeFailsWhenNISNeverReplies(t *testing.T) {
+func TestScrapeReportsDownWhenNISNeverReplies(t *testing.T) {
 	nisAddr, accepted := silentNIS(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -230,17 +231,26 @@ func TestScrapeFailsWhenNISNeverReplies(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusInternalServerError {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected status: %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if !strings.Contains(string(body), "\napcupsd_up 0\n") {
+		t.Fatalf("response does not report apcupsd as down:\n%s", body)
+	}
+	if !strings.Contains(string(body), "\ngo_goroutines ") {
+		t.Fatalf("response lost the system metrics:\n%s", body)
 	}
 	if got := accepted(); got <= dialsBefore {
 		t.Fatalf("scrape never reached the NIS: %d dials before and after", got)
 	}
 	if elapsed := time.Since(start); elapsed < 4*time.Second {
-		t.Fatalf("scrape failed after %v, before the timeout could have fired", elapsed)
+		t.Fatalf("scrape ended after %v, before the timeout could have fired", elapsed)
 	}
 
-	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	client.CloseIdleConnections()
 
@@ -320,7 +330,7 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-func TestFailedGatherIsLogged(t *testing.T) {
+func TestUnreachableNISIsLogged(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
@@ -336,12 +346,12 @@ func TestFailedGatherIsLogged(t *testing.T) {
 	h := newHandler("/metrics", false, newClient("tcp", addr))
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-	if rec.Code != http.StatusInternalServerError {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d", rec.Code)
 	}
-	// The exporter logs dial errors itself, so look for promhttp's own line.
-	if got := logs.String(); !strings.Contains(got, "error gathering metrics") {
-		t.Fatalf("failed gather was not logged by the handler, logs: %q", got)
+	// The response doesn't carry the error, so the log is the only trace of it.
+	if got := logs.String(); !strings.Contains(got, "error creating apcupsd client") {
+		t.Fatalf("dial error was not logged, logs: %q", got)
 	}
 }
 
@@ -720,8 +730,11 @@ func TestHealthzDoesNotDial(t *testing.T) {
 			rec = httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-			if rec.Code != http.StatusInternalServerError {
+			if rec.Code != http.StatusOK {
 				t.Fatalf("unexpected /metrics status: %d", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "\napcupsd_up 0\n") {
+				t.Fatalf("/metrics does not report apcupsd as down:\n%s", rec.Body)
 			}
 			if got := dials.Load(); got != 1 {
 				t.Fatalf("expected the scrape to dial once, got %d", got)

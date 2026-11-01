@@ -4,3 +4,6 @@ apcupsd_exporter_build_info{version="dev"} 1
 # HELP apcupsd_info Metadata about a given UPS.
 # TYPE apcupsd_info gauge
 apcupsd_info{hostname="example-host",model="Example UPS 600",status="COMMLOST",ups="example-ups"} 1
+# HELP apcupsd_up Whether the exporter could read a complete status from apcupsd (1) or not (0).
+# TYPE apcupsd_up gauge
+apcupsd_up 1
