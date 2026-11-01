@@ -203,6 +203,7 @@ Limits:
 - **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, with no required approvals.
 - **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, `allow_auto_merge`, and an Actions event policy.
 - **An Actions event policy keeps `pull_request_target` working.** From 2 December 2026, GitHub blocks that event by default on public repositories with no applicable policy. The repository policy under **Settings > Actions > Policies** allows it for `.github/workflows/dependabot-auto-merge.yml` only. Its `allowed_events` is an allow-list, so never remove its `workflow_path` condition, or it blocks every other event in the repository. A blocked run ends as `startup_failure` with no jobs, and the Dependabot PR stays open.
+- **`.github/CODEOWNERS` requests the maintainer's review on every PR they don't open themselves.** Dependabot's own `reviewers` option no longer exists, so this is what puts a held PR in front of someone. It also covers Go toolchain and release PRs. It doesn't delay auto-merge, because branch protection doesn't require code owner approval, so an auto-merged PR may be gone by the time the notification is read.
 
 ### The `automated-releases` app
 
@@ -265,7 +266,7 @@ What differs from upstream, and why:
 | Current Go and `client_golang` | Upstream's `client_golang` v1.12.1 lets an oversized NIS message crash the process |
 | The fake NIS and golden output files | They pin the frozen metrics against the real client and the real text format |
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `.github/CODEOWNERS`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
