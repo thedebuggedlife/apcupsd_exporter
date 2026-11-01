@@ -143,7 +143,7 @@ The action only receives the token, never the private key. It's one more third-p
 
 ### Hold rules
 
-After the action, the job finds the open PR labelled `autorelease: pending` itself, rather than relying on `prs_created`, so a `workflow_dispatch` run can act on a PR nothing has touched. It then decides:
+After the action, the job finds the open PR labelled `autorelease: pending` itself, rather than relying on `prs_created`, so a `workflow_dispatch` run can act on a PR nothing has touched. It lists the open PRs and filters on the label on the client, because `gh pr list --label` goes through the search index, which may not list a PR created seconds earlier by the same run. The step also runs after an action failure, so turning `AUTO_RELEASE` off still disarms a PR. It then decides:
 
 | State | Action |
 |---|---|
@@ -190,7 +190,7 @@ No test may push a tag or an image, so no release PR may be merged during testin
 2. Run `actionlint` with shellcheck on the new workflows.
 3. Dry-run the config: on a throwaway branch carrying the config, run the release-please CLI's `release-pr --dry-run` with that branch as the target, and confirm the outcome for a `fix:`, a `feat:`, a `feat!:`, a `docs:`, a `fix(ci):` touching only `.github`, and a Dependabot-style `fix(deps):` title. Pin the CLI to the version the action bundles.
 4. Exercise the hold rules against recorded inputs, with a `gh` shim, for each row of the table including an unparsable title.
-5. Run `remind` on a real runner through `workflow_dispatch`, with a throwaway PR carrying the label, and confirm it opens, updates once and closes one issue, and that the assignee is set. Exercise the merged-PR and failed-run conditions against recorded inputs, with a `gh` shim.
+5. Run `remind` on a real runner, with a throwaway PR carrying the label, and confirm it opens one issue, leaves it alone when nothing changed, and closes it, and that the assignee is set. A workflow can be dispatched only once it is on the default branch, so run it from a throwaway branch with a `push` trigger, the `release-please` job deleted and the age limits at zero, and show that nothing in that file can reach the action or the app key. Exercise the merged-PR and failed-run conditions against recorded inputs, with a `gh` shim.
 6. Run `go-toolchain.yml` as a dry run on a throwaway branch with an older `go` line and base image, and confirm the planned edits. Build that branch's result once with `push: false`.
 7. The maintainer sets the repository's `squash_merge_commit_title` to `PR_TITLE`. It's `COMMIT_OR_PR_TITLE` today, which ignores the PR title on a single-commit PR, so a PR retitled `feat:` during review would release as a patch. Do this as soon as item 3 lands.
 8. The next `fix:`, `feat:` or `fix(deps):` commit on `main` opens a real release PR. Check it, and that CI ran on it. It stays open, because `AUTO_RELEASE` is unset.
@@ -198,9 +198,8 @@ No test may push a tag or an image, so no release PR may be merged during testin
 
 Only that first release can prove these:
 
-- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does.
-- That `publish` works with the app as actor.
-- That a Go patch PR auto-merges, which depends on the same untested paths as Dependabot auto-merge.
+- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does. Both `scan`'s and `publish`'s `if:` have to accept that event, or `publish` is skipped with `scan`.
+- That a Go patch PR's own push and PR-opening steps work. A real Dependabot auto-merge, PR 15, already proved auto-merge and `publish` with the app as actor, so those no longer wait for the first release. The Go-specific steps first run on the next Go release.
 - That the token's three permissions are enough for release-please. It normally runs with everything the app holds. If it fails on labels, add `issues: write` to the token, after checking that the app has it.
 
 ## Known risks
@@ -223,6 +222,7 @@ Only that first release can prove these:
 - **A custom tagging script on a schedule.** The maintainer chose release-please, which is already in use across their repositories, for one way of working everywhere.
 - **Security classification from Dependabot alerts.** The issue's design needed to work out who merged each commit and whether it was a security fix. Releasing everything worth releasing removes the need.
 - **Publishing from the release workflow,** as the sibling repositories do. It would put `packages: write` beside the app key, and it would bypass `ci.yml`'s gates.
+- **Finding the release PR with `gh pr list --label`.** It reads the search index, which can miss a PR created seconds earlier, so the hold rules would skip a fresh PR. The job filters the open PRs on the client instead.
 - **`draft` releases with `force-tag-creation`,** which would keep the Release hidden until its image exists. It adds a step for a problem the reminder already covers.
 
 ## Left to the builder

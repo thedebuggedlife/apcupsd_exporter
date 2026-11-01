@@ -73,11 +73,11 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 ## Rules for this fork
 
 - **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes, because a rename breaks dashboards silently. `apcupsd_output_amps`, which came with an upstream merge, is the only metric added since `v0.3.0`.
-- **`latest` moves only on a release tag.** See [Release flow](#release-flow).
+- **`latest` moves only on a release tag,** and tags come only from release-please. See [Release flow](#release-flow).
 - **Never touch upstream.** No PRs, issues, or pushes.
 - **Watch the `gh` default repo.** On a fork, `gh` targets the parent repo by default. Run `gh repo set-default thedebuggedlife/apcupsd_exporter` in any new clone, check with `gh repo set-default --view`, and pass `--repo thedebuggedlife/apcupsd_exporter` when in doubt.
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline. Linking the upstream repository's front page is fine.
-- **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Release by pushing the tag by name.
+- **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Never push a tag by hand either: release-please creates the tags, and a hand tag gets no GitHub Release.
 - **Keep the project generic.** Code, docs, commits, PRs, and issues must not refer to a specific deployment, host, network, or person's infrastructure. Use placeholder addresses in examples.
 - **One Go version.** `go.mod` and the `Dockerfile` must name the same release; `ci.yml` reads `go.mod` through `go-version-file`. Both `Dockerfile` base images are pinned to a version plus multi-arch index digest, so bump them together.
 - **Keep the module path** `github.com/mdlayher/apcupsd_exporter`. It has no runtime effect and keeps upstream merges cheap.
@@ -85,36 +85,92 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 ## Release flow
 
-Releases are tag-driven and made by hand. There is no release-please. Every `vX.Y.Z` image is built from a commit already on `main`.
+Releases are automatic and run through release-please. A change that has merged to `main` and calls for a release is released once CI passes, with nothing for a person to remember. Every `vX.Y.Z` image is built from a commit already on `main`.
+
+How a release happens:
+
+1. A commit lands on `main`. `.github/workflows/release-please.yml` runs on the push, and release-please opens or updates a release PR titled `chore(main): release X.Y.Z`, if the commits since the last release call for one. It labels the PR `autorelease: pending`.
+2. The workflow turns on auto-merge for that PR, if the [hold rules](#hold-rules) allow it.
+3. `test`, `lint`, `vuln` and `image` run on the release PR, because the app opened it. `image` runs `scripts/test-container.sh` and Trivy. The `edge` image isn't pulled.
+4. The PR merges. The push to `main` runs the workflow again, and release-please creates the `vX.Y.Z` GitHub Release, which creates the tag on that commit.
+5. The tag was created with the app token, so it fires `on: push` and `ci.yml` publishes.
 
 `ci.yml` publishes to `ghcr.io/thedebuggedlife/apcupsd_exporter` for `linux/amd64`, `linux/arm` and `linux/arm64`:
 
 | Trigger | Image tags | GitHub Release |
 |---|---|---|
-| Strict `vX.Y.Z` tag on a commit already on `main` | `vX.Y.Z` (keeping the `v`), `latest`, full commit SHA | Created by the `release` job |
+| Strict `vX.Y.Z` tag on a commit already on `main` | `vX.Y.Z` (keeping the `v`), `latest`, full commit SHA | Created by release-please, shortly before the image exists |
 | Push to `main` | `edge`, full commit SHA | None |
 
-To release:
+`ci.yml` has no `release` job, because release-please creates the Release and `gh release create` would fail on an existing one. A publish that fails after the Release exists is what the [reminder](#the-release-reminder) is for. Tags are never moved, so a bad `vX.Y.Z` can only be fixed by a newer release.
 
-1. Make sure everything is merged to `main` and CI is green.
-2. Run the `edge` image for that commit against the fake NIS, and check it as in the last step below. Tags are never moved, so a bad `vX.Y.Z` can only be fixed by a newer tag.
-3. Run `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. Confirm `ghcr.io/thedebuggedlife/apcupsd_exporter:vX.Y.Z` exists for all three platforms, and that `latest` has the same digest.
-5. Confirm the GitHub Release exists.
-6. Run the published image against a real or fake NIS. Confirm every `apcupsd_*` series from the previous release is still there with the same labels, and that the container reaches `healthy`.
+To check a release, confirm that `ghcr.io/thedebuggedlife/apcupsd_exporter:vX.Y.Z` exists for all three platforms and that `latest` has the same digest. Then run it against a real or fake NIS, confirm every `apcupsd_*` series from the previous release is still there with the same labels, and that the container reaches `healthy`.
 
-How publishing is gated:
+### What picks the version
+
+A PR's squash title becomes the commit title on `main`, and release-please reads it. It must be a conventional commit, or the change releases nothing by itself. The repository's `squash_merge_commit_title` must be `PR_TITLE`: with the default `COMMIT_OR_PR_TITLE`, a single-commit PR is squashed under its commit's title and a retitled PR would release as the wrong version.
+
+| Commit title | Effect |
+|---|---|
+| `feat:` or `feat(scope):` | Next minor |
+| `fix:`, `perf:` or `revert:`, with or without a scope | Next patch |
+| `!` before the colon, or a `BREAKING CHANGE` footer | Next major, `1.0.0` from here, which is [held](#hold-rules) |
+| `docs:`, `test:`, `ci:`, `chore:`, `build:`, `refactor:`, `style:` | No release. They go out with the next one |
+| A title that isn't a conventional commit, including a merge commit | No release |
+
+- **`Release-As: X.Y.Z` in a commit body forces a version.** It is also how an upstream sync gets its own release.
+- **`feat` stays a minor below `1.0.0`,** because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. New metrics go in a minor release.
+- **`exclude-paths`** in `release-please-config.json` drops commits that only touch `.github`, `docs`, `scripts`, `testdata` or `internal/fakenis`, whatever their title. It matches directories only, so it can't list `README.md`.
+- **Dependabot titles are prefixed** so they count: `fix(deps)` for `gomod` and `docker`, which releases a patch, and `ci(deps)` for `github-actions`, which doesn't release, because Actions aren't in the image. The Go toolchain PRs are titled `fix(deps): bump Go to X.Y.Z`.
+- **A sync merge commit triggers nothing by itself,** but the upstream commits it brings are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog.
+- **Config:** `release-please-config.json` (`release-type: go`, `v` in the tag, no component, `bootstrap-sha` at the `v0.4.0` commit) and `.release-please-manifest.json` (the last released version). The first release PR adds `CHANGELOG.md`, which covers only `v0.4.0` onwards. All three are in `.dockerignore` or covered by `*.md`.
+- **No hand tags.** A hand tag gets no GitHub Release, and release-please wouldn't take it as the new version. Use `Release-As`.
+
+### Hold rules
+
+After the action runs, the `release-please` job finds the open PR labelled `autorelease: pending` itself, so a `workflow_dispatch` run can act on a PR nothing has touched. The label is matched client-side, because `gh pr list --label` goes through the search index, which may not list a PR created seconds earlier by the same run. The step runs even after the action fails, so turning `AUTO_RELEASE` off still disarms a PR.
+
+| State | Action |
+|---|---|
+| The repository variable `AUTO_RELEASE` is exactly `on`, and the version in the PR title has the same major as the manifest on `main` | `gh pr merge --auto --squash` |
+| Anything else, including a title that doesn't parse and a manifest that can't be read | Turn auto-merge off if it's on |
+
+The check fails closed: an unset `AUTO_RELEASE` holds, and so does `ON`. A held PR is the signal. The maintainer can merge it by hand, and that is how a major goes out.
+
+- **To pause all releases,** set `AUTO_RELEASE` to anything but `on` (or delete it) and run `release-please.yml` from the Actions tab so the change takes effect at once. The release PR stays open and keeps collecting commits. To resume, set it back to `on` and run the workflow. This is also how to batch several PRs into one release.
+- **A pause stops releases, not merges.** Dependabot and Go patch PRs still auto-merge into `main`, and the next release picks them up. The hold for a Go patch is separate and still applies: see [Go toolchain updates](#go-toolchain-updates).
+- **A pause means no new tags,** so anyone pinned to a tag stays on it and `latest` doesn't move.
+
+### The release reminder
+
+The `remind` job in `release-please.yml` keeps at most one open issue, titled `Automatic release is blocked` and labelled `release-blocked`, which the job creates if missing. It runs daily and on `workflow_dispatch`, with a read-only `GITHUB_TOKEN` plus `issues: write` and `actions: read`. It opens or updates the issue when any of these is true:
+
+- An `autorelease: pending` PR has been open for over 24 hours. That covers failed checks, a paused automation and a held major.
+- An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count. A waiting Go minor PR doesn't count either, because the open PR is its own notice.
+- The newest GitHub Release is over 2 hours old and its tag's own `ci.yml` run has no successful `publish` job. A `publish` run on `main` for the same commit doesn't count.
+- A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that is resolved. Re-running `release-please.yml` clears it.
+- The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, ended in `failure`, `timed_out` or `startup_failure`. An expired app key shows up here, when nothing else would.
+
+The job edits the issue only if the body changed, so a daily run sends no repeat notifications. It closes the issue with a comment when none of this is true. A failed query fails the job and leaves the issue as it was. The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job assigns it to the maintainer's login, which sits in the workflow. Any other issue a workflow opens must do the same.
+
+### How publishing is gated
 
 - **`publish` needs `test`, `lint`, `vuln` and `scan`, and never `image`.** `image` is PR-only, and a skipped job in `needs` skips everything that depends on it, so nothing would ever publish.
 - **`scan` runs in its own read-only job and `publish` needs it,** so a failed scan can't leave a new `latest` behind and the scanner never shares a job with `packages: write`.
+- **`scan` and `publish` must stay on the same events.** Both `if:` conditions have to accept any event that publishes. If one accepted an event the other skipped, `publish` would be skipped with it, so nothing would publish.
 - **A tag run has two guards:** the tag must be a strict `vX.Y.Z`, and the tagged commit must be on `main`.
 - **`latest` is off unless the run is for a tag.** `metadata-action` runs with `flavor: latest=false` and enables `latest` explicitly, so a `main` push can never move it.
 - **Every job that writes with `GITHUB_TOKEN` declares its own `permissions:`.** The organisation caps the default `GITHUB_TOKEN` at read-only, and that can't be changed per repo.
-- **Only a push publishes.** The weekly `schedule` runs `test`, `lint` and `vuln`, and nothing else, so `scan` doesn't run on it either.
+- **Only a push publishes.** The weekly `schedule` runs `test`, `lint` and `vuln`.
+- **The release workflow never publishes.** It is separate from `ci.yml`, so the app key stays away from `publish`, and the image still goes through every `ci.yml` gate.
 
 Limits:
 
 - `latest` can move backwards. A tag on an older commit that's on `main` passes both guards, so `latest` follows it. Re-running an old tag's run does the same.
+- Until the first automated release, nothing has proved that a tag created by release-please with the app token fires `on: push`. If it doesn't, add `release: types: [published]` to `ci.yml`, and make both `scan`'s and `publish`'s `if:` accept that event.
+- Nobody checks a release after it merges. A behaviour change titled `fix:` reaches users on their next pull, and the README says patch releases aren't individually reviewed.
+- Dependabot's weekly updates each cause a release, so expect about one a week.
+- Scheduled workflows stop after 60 days without repository activity, which would also stop the reminder.
 
 ## Dependabot
 
@@ -134,7 +190,7 @@ Limits:
 - **Every update in a PR must qualify.** One minor holds a whole PR, which is why the groups are split by level.
 - **Patch and minor mean a move between plain `X.Y.Z` versions.** Pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases, `+incompatible` versions and bare commit SHAs count as unknown. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
 - **Any base image tag change is held.** The `golang` tag is the exception: Dependabot ignores it, and the [Go toolchain workflow](#go-toolchain-updates) bumps it together with `go.mod`, as the one-Go-version rule needs.
-- **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title may carry a prefix like `build(deps): `, because Dependabot copies the repository's commit style.
+- **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title carries the `commit-message.prefix` from `dependabot.yml`, as in `fix(deps): Bump x from ...`. Dependabot writes `Bump` with a capital B after a prefix, and the check accepts either case.
 - **Digest updates stay out of groups.** A group with `update-types` admits only updates that compare higher, and a digest bump keeps its version, so it arrives as its own PR. That is why the `docker` groups keep `update-types`. A group PR holding several digests would be held.
 - **How a security update is recognised:** a Go module PR in the `go-security` group, or an ungrouped one where every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API. `fetch-metadata`'s own `alert-lookup` isn't used: it matches the alert's package name exactly, so it misses a Go alert filed against a package inside the module, and a failed lookup would fail the whole metadata step.
 - **An unreadable alert means an ordinary update.** A security patch still merges as a patch, and a security minor is held.
@@ -146,10 +202,11 @@ Limits:
 
 ### The `automated-releases` app
 
-The workflow does everything with a token from the `automated-releases` GitHub App, so the job's `GITHUB_TOKEN` has no permissions.
+`dependabot-auto-merge.yml`, `go-toolchain.yml` and the `release-please` job of `release-please.yml` do their writing with a token from the `automated-releases` GitHub App. The jobs' own `GITHUB_TOKEN` has no write permissions, except in the `remind` job, which has `issues: write` and no app token.
 
 - **Why an app:** `GITHUB_TOKEN` can't hold `workflows`, so GitHub refuses to enable auto-merge on a PR that edits `.github/workflows/`. And a merge made with `GITHUB_TOKEN` doesn't fire `on: push`, while one made with the app does, so CI and `publish` run for every auto-merge.
-- **Credentials:** the repo variable `RELEASE_BOT_APP_ID` and the Actions secret `RELEASE_BOT_PRIVATE_KEY`. The token requests only `contents: write`, `pull-requests: write`, `vulnerability-alerts: read` and `workflows: write`.
+- **Credentials:** the repo variable `RELEASE_BOT_APP_ID` and the Actions secret `RELEASE_BOT_PRIVATE_KEY`. Each workflow requests only what it needs: the auto-merge token asks for `contents: write`, `pull-requests: write`, `vulnerability-alerts: read` and `workflows: write`, and the release and Go toolchain tokens ask for `contents: write`, `pull-requests: write` and `workflows: write`. If release-please fails on labels, the release token needs `issues: write` too, after checking that the app has it.
+- **Why the release token is an app token:** a tag created by release-please with `GITHUB_TOKEN` fires no `on: push`, so `publish` would never run, and a release PR opened with it starts no CI. The `release-please` job has no checkout and only the action receives the token, never the private key.
 - **The `pull_request_target` job must never run PR code.** It holds the app key, so it has no `actions/checkout`, the logic stays inline, and PR-controlled values reach scripts only through `env`. It runs only when the author is `dependabot[bot]` and the head repo is this repo.
 - **`pull_request_target` gets Actions secrets on a Dependabot PR,** unless Dependabot created the PR's base branch. GitHub's general statement that Dependabot runs see only Dependabot secrets doesn't apply to this event. If `Check the app credentials` fails on a Dependabot PR, add `RELEASE_BOT_PRIVATE_KEY` as a Dependabot secret too.
 
@@ -158,10 +215,10 @@ Limits:
 - `staticcheck` and `govulncheck` are pinned as `go run` arguments in `ci.yml`, so Dependabot can't update them. They need manual bumps.
 - Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure, and the [Go toolchain workflow](#go-toolchain-updates) fixes it once a Go release is out and its image is published. The weekly `schedule` is what catches it when no PRs are open.
 - While `vuln` is failing, it blocks auto-merge too.
-- An auto-merge only reaches `main` and `edge`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
-- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. `go-toolchain.yml` also holds it, through `create-github-app-token` on a daily schedule. The `cooldown` is the only delay before they run with those credentials.
+- An auto-merge reaches `main` and `edge`. Users get the fix when the next release goes out, which follows from the commit title: `fix(deps)` releases a patch, `ci(deps)` releases nothing, and a paused `AUTO_RELEASE` delays it. See [Release flow](#release-flow).
+- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. `go-toolchain.yml` and `release-please.yml` also hold it, through `create-github-app-token` on a schedule or a push to `main`, and `release-please.yml` hands the token to `googleapis/release-please-action`, which can write to the repository. The `cooldown` is the only delay before they run with those credentials.
 - The `cooldown` doesn't hold a digest update if the registry gives no publish date.
-- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly `ci.yml` runs or the daily `go-toolchain.yml` runs stop, check their `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
+- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly `ci.yml` runs or the daily `go-toolchain.yml` and `release-please.yml` runs stop, check their `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
 
 ## Go toolchain updates
 
@@ -200,10 +257,11 @@ What differs from upstream, and why:
 | `http.Server` timeouts | `http.ListenAndServe` has none |
 | `HandlerOpts.ErrorLog` | A recovered panic would otherwise leave no trace in the logs |
 | `/healthz` and `-healthcheck` | The distroless image has no shell or curl, so the binary has to probe itself |
+| Releases through release-please, and Go toolchain PRs | Upstream releases by hand, so a fix can sit unreleased and the Go version drifts |
 | Current Go and `client_golang` | Upstream's `client_golang` v1.12.1 lets an oversized NIS message crash the process |
 | The fake NIS and golden output files | They pin the frozen metrics against the real client and the real text format |
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 
@@ -211,6 +269,6 @@ These are declared preferences; they override the superpowers skills' defaults.
 
 - **Worktrees are owned by Paseo** (`paseo.json` runs `go mod download` on creation; they live under `~/.paseo/worktrees/`). If already in a linked worktree, work there. Never use `EnterWorktree` or `git worktree add`. From the main checkout, create a Paseo worktree (`paseo worktree create --mode branch-off --new-branch <name>`, or `mcp__paseo__create_workspace`), because the main checkout may be shared with other agents. Don't run `go get` or `go mod tidy` in a worktree unless the work is a dependency update; if dependencies are missing, run `go mod download`. After removing a worktree outside Paseo, run `scripts/lumen-prune.sh`.
 - **Baseline / verification** is what the CI `test`, `lint` and `vuln` jobs run: `go test -race ./...`, an empty `gofmt -l .`, `go vet ./...`, `staticcheck ./...` and `govulncheck ./...`.
-- **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. Don't put a closing keyword (`close`, `fix`, `resolve` and their forms) directly before an issue number in PR text, even negated, because GitHub ignores the negation; say `Refs #N` or `Part of #N` instead. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
+- **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. Title the PR as a conventional commit, because its squash title picks the version (see [What picks the version](#what-picks-the-version)). Don't put a closing keyword (`close`, `fix`, `resolve` and their forms) directly before an issue number in PR text, even negated, because GitHub ignores the negation; say `Refs #N` or `Part of #N` instead. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
 - **Specs** go in `docs/specs/YYYY-MM-DD-<feature>.md`, committed as `docs:` on the feature branch. Specs are public, so the generic-project rule applies to them.
 - **Plans** and other agent workflow artifacts **never** get committed into the tree.
