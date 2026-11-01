@@ -48,11 +48,12 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Decide whether the release PR may merge
+        if: ${{ !cancelled() && steps.token.outcome == 'success' }}
         env:
           AUTO_RELEASE: ${{ vars.AUTO_RELEASE }}
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          pr="$(gh pr list --label 'autorelease: pending' --state open --json number,title,autoMergeRequest --jq '.[0] // empty')"
+          pr="$(gh pr list --state open --limit 100 --json number,title,labels,autoMergeRequest --jq '[.[] | select(any(.labels[]; .name == "autorelease: pending"))][0] // empty')"
           if [ -z "$pr" ]; then
             echo "::notice::No open release PR"
             exit 0
