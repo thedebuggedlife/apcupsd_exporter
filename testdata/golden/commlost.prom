@@ -1,0 +1,6 @@
+# HELP apcupsd_exporter_build_info The version the exporter was built from, with a constant value of 1.
+# TYPE apcupsd_exporter_build_info gauge
+apcupsd_exporter_build_info{version="dev"} 1
+# HELP apcupsd_info Metadata about a given UPS.
+# TYPE apcupsd_info gauge
+apcupsd_info{hostname="example-host",model="",status="COMMLOST",ups="example-ups"} 1

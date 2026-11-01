@@ -104,9 +104,9 @@ func TestBuildInfoReportsVersion(t *testing.T) {
 	}
 }
 
-// The golden files come from the v0.3.0 binary plus hand-added lines for newer metrics, so never regenerate them from the working tree.
+// The golden files are from the v0.3.0 binary or written by hand, so never regenerate them from the working tree.
 func TestOutputBaseline(t *testing.T) {
-	for _, name := range []string{"full", "no-outcurnt"} {
+	for _, name := range []string{"full", "no-outcurnt", "commlost-stale", "commlost"} {
 		t.Run(name, func(t *testing.T) {
 			messages, err := fakenis.Response(name)
 			if err != nil {

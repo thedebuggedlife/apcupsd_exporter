@@ -1,0 +1,21 @@
+APC      : 001,020,0510
+DATE     : 2024-01-02 03:04:05 -0500  
+HOSTNAME : example-host
+VERSION  : 3.14.14 (31 May 2016) unknown
+UPSNAME  : example-ups
+CABLE    : USB Cable
+DRIVER   : USB UPS Driver
+UPSMODE  : Stand Alone
+STARTTIME: 2024-01-01 00:00:00 -0500  
+STATUS   : COMMLOST 
+MBATTCHG : 10 Percent
+MINTIMEL : 10 Minutes
+MAXTIME  : 0 Seconds
+LASTXFER : Automatic or explicit self test
+NUMXFERS : 0
+TONBATT  : 0 Seconds
+CUMONBATT: 0 Seconds
+XOFFBATT : N/A
+SELFTEST : NO
+STATFLAG : 0x05000108
+END APC  : 2024-01-02 03:04:51 -0500  
