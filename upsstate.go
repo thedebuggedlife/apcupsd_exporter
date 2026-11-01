@@ -19,20 +19,19 @@ type upsState struct {
 	online, onBattery, lowBattery bool
 }
 
-// parseUPSState decodes STATFLAG, falling back to the words in STATUS. It
-// returns false when neither says what the UPS is doing.
-func parseUPSState(status, statusFlags string) (upsState, bool) {
-	words := strings.Fields(status)
-	if slices.Contains(words, "COMMLOST") {
-		return upsState{}, false
+// contactLost needs the bit too, because SHUTTING DOWN replaces COMMLOST in STATUS.
+func contactLost(status, statusFlags string) bool {
+	if slices.Contains(strings.Fields(status), "COMMLOST") {
+		return true
 	}
 
-	if flags, ok := parseStatusFlags(statusFlags); ok {
-		// apcupsd leaves the other bits as they were when contact was lost.
-		if flags&flagCommLost != 0 {
-			return upsState{}, false
-		}
+	flags, ok := parseStatusFlags(statusFlags)
+	return ok && flags&flagCommLost != 0
+}
 
+// parseUPSState decodes STATFLAG, then STATUS, and returns false if neither shows a power state.
+func parseUPSState(status, statusFlags string) (upsState, bool) {
+	if flags, ok := parseStatusFlags(statusFlags); ok {
 		state := upsState{
 			online:     flags&flagOnline != 0,
 			onBattery:  flags&flagOnBattery != 0,
@@ -44,6 +43,7 @@ func parseUPSState(status, statusFlags string) (upsState, bool) {
 	}
 
 	// SHUTTING DOWN replaces every other word, so this also covers that state.
+	words := strings.Fields(status)
 	state := upsState{
 		online:     slices.Contains(words, "ONLINE"),
 		onBattery:  slices.Contains(words, "ONBATT"),

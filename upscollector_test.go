@@ -191,6 +191,49 @@ func TestUPSCollectorStatusGauges(t *testing.T) {
 	}
 }
 
+func TestUPSCollectorSendsOnlyInfoOnLostContact(t *testing.T) {
+	tests := []struct {
+		desc   string
+		status string
+		flags  string
+	}{
+		{desc: "STATUS and flags", status: "COMMLOST", flags: "0x05000108"},
+		{desc: "STATUS only", status: "COMMLOST"},
+		{desc: "STATUS without the bit", status: "COMMLOST", flags: "0x05000008"},
+		{desc: "bit behind SHUTTING DOWN", status: "SHUTTING DOWN", flags: "0x05000308"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			out := testCollector(t, NewUPSCollector(&testStatusSource{
+				s: &apcupsd.Status{
+					UPSName:         "bar",
+					Status:          tt.status,
+					StatusFlags:     tt.flags,
+					LineVoltage:     118,
+					OutputAmps:      1.06,
+					LineFrequency:   60,
+					BatteryDate:     "2023-01-01",
+					LastTransfer:    "Low line voltage",
+					NumberTransfers: 3,
+				},
+			}))
+
+			var series []string
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "apcupsd_") {
+					series = append(series, line)
+				}
+			}
+
+			want := fmt.Sprintf(`apcupsd_info{hostname="",model="",status=%q,ups="bar"} 1`, tt.status)
+			if len(series) != 1 || series[0] != want {
+				t.Fatalf("unexpected series:\ngot:  %q\nwant: %q", series, want)
+			}
+		})
+	}
+}
+
 func TestUPSCollectorBatteryDate(t *testing.T) {
 	tests := []struct {
 		date string

@@ -278,6 +278,11 @@ func (c *UPSCollector) Collect(ch chan<- prometheus.Metric) {
 		s.UPSName, s.Hostname, s.Model, s.Status,
 	)
 
+	// apcupsd serves stale readings and then drops many fields, so none can be trusted.
+	if contactLost(s.Status, s.StatusFlags) {
+		return
+	}
+
 	ch <- prometheus.MustNewConstMetric(
 		c.UPSLoadPercent,
 		prometheus.GaugeValue,

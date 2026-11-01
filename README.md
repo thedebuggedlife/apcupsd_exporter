@@ -21,6 +21,9 @@ upstream's `apcupsd_*` metric names, labels and units, and its module path.
 - **More metrics:** numeric status gauges, line frequency, battery date, last
   transfer reason and `apcupsd_exporter_build_info`, listed in the
   [metric catalogue](docs/metrics.md).
+- **Disconnected UPS:** while apcupsd has lost contact with the UPS, the exporter
+  sends only `apcupsd_info` and its build info, instead of stale readings and
+  zeros. The [metric catalogue](docs/metrics.md) has the details.
 - **`-metrics.system=false`:** leaves only the `apcupsd_*` metrics.
 - **Bounded scrapes:** the 5 second limit covers the whole NIS exchange, so a NIS
   that accepts a connection and never answers fails the scrape instead of hanging
@@ -37,7 +40,8 @@ upstream's `apcupsd_*` metric names, labels and units, and its module path.
 and source NIS field, and what happens when the UPS doesn't report it.
 
 When apcupsd can't be reached, `/metrics` returns an HTTP 500 and Prometheus
-records `up == 0`.
+records `up == 0`. When apcupsd is running but has lost contact with the UPS,
+`/metrics` returns 200 with no readings, so alert on that separately.
 
 ## Usage
 

@@ -1,0 +1,37 @@
+APC      : 001,036,0884
+DATE     : 2024-01-02 03:04:05 -0500  
+HOSTNAME : example-host
+VERSION  : 3.14.14 (31 May 2016) unknown
+UPSNAME  : example-ups
+CABLE    : USB Cable
+DRIVER   : USB UPS Driver
+UPSMODE  : Stand Alone
+STARTTIME: 2024-01-01 00:00:00 -0500  
+MODEL    : Example UPS 600 
+STATUS   : COMMLOST 
+LINEV    : 118.0 Volts
+LOADPCT  : 21.0 Percent
+BCHARGE  : 100.0 Percent
+TIMELEFT : 33.9 Minutes
+MBATTCHG : 10 Percent
+MINTIMEL : 10 Minutes
+MAXTIME  : 0 Seconds
+SENSE    : Medium
+LOTRANS  : 92.0 Volts
+HITRANS  : 139.0 Volts
+ALARMDEL : 30 Seconds
+BATTV    : 13.5 Volts
+LASTXFER : Automatic or explicit self test
+NUMXFERS : 0
+TONBATT  : 0 Seconds
+CUMONBATT: 0 Seconds
+XOFFBATT : N/A
+SELFTEST : NO
+STATFLAG : 0x05000108
+SERIALNO : EXAMPLE00000  
+BATTDATE : 2023-01-01
+NOMINV   : 120 Volts
+NOMBATTV : 12.0 Volts
+NOMPOWER : 330 Watts
+FIRMWARE : 000.A0 .D USB FW:A0
+END APC  : 2024-01-02 03:04:14 -0500  

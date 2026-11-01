@@ -16,6 +16,9 @@ The last column uses two terms:
 - **Omitted:** the series is missing from the response, along with its `HELP`
   and `TYPE` lines.
 
+The table describes a UPS that apcupsd can reach. Most series stop when it can't:
+see [When apcupsd loses contact with the UPS](#when-apcupsd-loses-contact-with-the-ups).
+
 ## `apcupsd_*`
 
 | Metric | Type | Unit | Labels | NIS field | When the UPS doesn't report it |
@@ -89,16 +92,31 @@ the bits stay correct. If `STATFLAG` is missing, unreadable or shows neither
 online nor on battery, they use the words `ONLINE`, `ONBATT` and `LOWBATT` from
 `STATUS` instead.
 
-All three are sent together, and all three are omitted when the state isn't
-known:
+All three are sent together, and all three are omitted when neither `STATFLAG`
+nor `STATUS` shows online or on battery. That includes a scrape just after
+apcupsd starts, before it has read the UPS.
 
-- apcupsd has lost contact with the UPS, shown by either `STATUS` or `STATFLAG`.
-  The `STATFLAG` bits are out of date in that state.
-- Neither `STATFLAG` nor `STATUS` shows online or on battery. That includes a
-  scrape just after apcupsd starts, before it has read the UPS.
+They are also omitted when [apcupsd loses contact with the UPS](#when-apcupsd-loses-contact-with-the-ups).
+That means an alert on `apcupsd_status_on_battery == 1` resolves if contact is
+lost during an outage. Pair it with `absent()` if that matters.
 
-Because they can be omitted, an alert on `apcupsd_status_on_battery == 1` resolves
-if contact is lost during an outage. Pair it with `absent()` if that matters.
+## When apcupsd loses contact with the UPS
+
+While `STATUS` shows `COMMLOST`, or `STATFLAG` has the same bit set, the only
+`apcupsd_*` metrics sent are `apcupsd_info` and `apcupsd_exporter_build_info`.
+The scrape still returns 200, so Prometheus records `up == 1`. To alert on this,
+use `absent()` on another metric. `apcupsd_info{status=~".*COMMLOST.*"}` also
+works, except during a shutdown, when `STATUS` reads `SHUTTING DOWN` instead.
+
+Every other series stops, because none of the values can be trusted in this
+state. With a USB UPS, unplugging the cable shows two stages:
+
+1. At first, apcupsd keeps sending every field, frozen at the last reading.
+2. Shortly after, it drops many fields, including `MODEL`, `LINEV` and `BCHARGE`.
+   These would otherwise read 0, and `model` on `apcupsd_info` becomes empty.
+
+The series return on the first scrape after contact is restored. `status` and
+`model` on `apcupsd_info` change in those states, so each one is a new series.
 
 ## When a scrape fails
 
