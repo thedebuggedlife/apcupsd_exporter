@@ -42,9 +42,9 @@ apply() {
   [[ $(grep -cE "$golang_re" "$dockerfile" || true) -eq 1 ]] || { echo "$dockerfile needs exactly one golang FROM line" >&2; exit 1; }
   [[ $(grep -cE "$distroless_re" "$dockerfile" || true) -eq 1 ]] || { echo "$dockerfile needs exactly one pinned distroless FROM line" >&2; exit 1; }
 
+  trap 'rm -f "${gomod_tmp:-}" "${dockerfile_tmp:-}"' EXIT
   gomod_tmp=$(mktemp "$dir/.go.mod.XXXXXX")
   dockerfile_tmp=$(mktemp "$dir/.Dockerfile.XXXXXX")
-  trap 'rm -f "${gomod_tmp:-}" "${dockerfile_tmp:-}"' EXIT
 
   cp -p "$gomod" "$gomod_tmp"
   cp -p "$dockerfile" "$dockerfile_tmp"

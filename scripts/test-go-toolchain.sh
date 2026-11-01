@@ -61,6 +61,10 @@ expect_targets "numeric minor compare" 1.9.3 "" 1.10.0 1.10.0 1.9.3
 expect_targets "numeric minor compare among candidates" 1.8.0 "" 1.10.0 1.9.3 1.10.0
 expect_targets "release candidate marked stable is ignored" 1.27.3 "" "" 1.28rc1 1.27.3
 
+current=$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' "$repo/go.mod")
+[[ $current =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail setup "go.mod has no X.Y.Z go line"
+next=${current%.*}.$((${current##*.} + 1))
+
 a=sha256:$(printf 'a%.0s' $(seq 64))
 b=sha256:$(printf 'b%.0s' $(seq 64))
 
@@ -83,14 +87,14 @@ expect_exit() {
 }
 
 dir=$(new_dir apply)
-"$script" apply 1.27.4 "$a" "$b" "$dir" || fail apply "exited $?"
+"$script" apply "$next" "$a" "$b" "$dir" || fail apply "exited $?"
 
-want_golang="FROM --platform=\$BUILDPLATFORM golang:1.27.4-trixie@$a AS build"
+want_golang="FROM --platform=\$BUILDPLATFORM golang:$next-trixie@$a AS build"
 want_distroless="FROM gcr.io/distroless/static-debian13:nonroot@$b"
 [[ $(sed -n 2p "$dir/Dockerfile") == "$want_golang" ]] || fail apply "Dockerfile line 2 is $(sed -n 2p "$dir/Dockerfile")"
 grep -qxF "$want_distroless" "$dir/Dockerfile" || fail apply "distroless line missing"
 [[ $(grep -c '^go ' "$dir/go.mod") -eq 1 ]] || fail apply "go.mod has no single go line"
-grep -qxF "go 1.27.4" "$dir/go.mod" || fail apply "go.mod lacks go 1.27.4"
+grep -qxF "go $next" "$dir/go.mod" || fail apply "go.mod lacks go $next"
 
 changed=$(diff "$repo/go.mod" "$dir/go.mod" | grep -c '^>' || true)
 [[ $changed -eq 1 ]] || fail apply "go.mod changed $changed lines"
@@ -103,37 +107,37 @@ removed=$(diff "$repo/Dockerfile" "$dir/Dockerfile" | grep -c '^<' || true)
 
 cp "$dir/Dockerfile" "$work/applied.Dockerfile"
 cp "$dir/go.mod" "$work/applied.go.mod"
-"$script" apply 1.27.4 "$a" "$b" "$dir" || fail "apply twice" "exited $?"
+"$script" apply "$next" "$a" "$b" "$dir" || fail "apply twice" "exited $?"
 cmp -s "$dir/Dockerfile" "$work/applied.Dockerfile" || fail "apply twice" "Dockerfile changed"
 cmp -s "$dir/go.mod" "$work/applied.go.mod" || fail "apply twice" "go.mod changed"
 
 dir=$(new_dir no-golang)
 grep -v 'golang:' "$repo/Dockerfile" >"$dir/Dockerfile"
-expect_exit "apply without golang line" 1 "$script" apply 1.27.4 "$a" "$b" "$dir"
+expect_exit "apply without golang line" 1 "$script" apply "$next" "$a" "$b" "$dir"
 cmp -s "$repo/go.mod" "$dir/go.mod" || fail "apply without golang line" "go.mod changed"
 [[ $(entries "$dir") -eq 2 ]] || fail "apply without golang line" "left stray files"
 
 dir=$(new_dir no-distroless)
 grep -v 'distroless' "$repo/Dockerfile" >"$dir/Dockerfile"
-expect_exit "apply without distroless line" 1 "$script" apply 1.27.4 "$a" "$b" "$dir"
+expect_exit "apply without distroless line" 1 "$script" apply "$next" "$a" "$b" "$dir"
 cmp -s "$repo/go.mod" "$dir/go.mod" || fail "apply without distroless line" "go.mod changed"
 
 dir=$(new_dir no-gomod)
 rm "$dir/go.mod"
-expect_exit "apply without go.mod" 1 "$script" apply 1.27.4 "$a" "$b" "$dir"
+expect_exit "apply without go.mod" 1 "$script" apply "$next" "$a" "$b" "$dir"
 cmp -s "$repo/Dockerfile" "$dir/Dockerfile" || fail "apply without go.mod" "Dockerfile changed"
 
 dir=$(new_dir no-go-line)
 grep -v '^go ' "$repo/go.mod" >"$dir/go.mod"
-expect_exit "apply without go line" 1 "$script" apply 1.27.4 "$a" "$b" "$dir"
+expect_exit "apply without go line" 1 "$script" apply "$next" "$a" "$b" "$dir"
 cmp -s "$repo/Dockerfile" "$dir/Dockerfile" || fail "apply without go line" "Dockerfile changed"
 
 expect_exit "no arguments" 2 "$script"
 expect_exit "unknown command" 2 "$script" frobnicate
 expect_exit "targets with too few arguments" 2 "$script" targets 1.27.3
 expect_exit "targets with a bad version" 2 "$script" targets v1.27 "$work/releases.json"
-expect_exit "apply with too few arguments" 2 "$script" apply 1.27.4 "$a"
+expect_exit "apply with too few arguments" 2 "$script" apply "$next" "$a"
 expect_exit "apply with a bad version" 2 "$script" apply 1.27 "$a" "$b" "$work"
-expect_exit "apply with a short digest" 2 "$script" apply 1.27.4 sha256:abc "$b" "$work"
+expect_exit "apply with a short digest" 2 "$script" apply "$next" sha256:abc "$b" "$work"
 
 echo PASS
