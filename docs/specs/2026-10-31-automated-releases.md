@@ -135,7 +135,7 @@ The existing digest title check in `dependabot-auto-merge.yml` already accepts a
 | Job | Runs on | Permissions | Does |
 |---|---|---|---|
 | `release-please` | `push`, `workflow_dispatch` | App token with `contents: write`, `pull-requests: write`, `workflows: write`. No checkout | Runs the action, then applies the hold rules to the open release PR |
-| `remind` | `schedule`, `workflow_dispatch` | `GITHUB_TOKEN`, `issues: write`, `actions: read`, `pull-requests: read`. No checkout | Opens, updates or closes the reminder |
+| `remind` | `schedule`, `workflow_dispatch` | `GITHUB_TOKEN`, `issues: write`, `actions: read`, `checks: read`, `contents: read`, `pull-requests: read`. No checkout | Opens, updates or closes the reminder |
 
 `release-please` checks the credentials first, as `dependabot-auto-merge.yml` does. It uses `concurrency` without cancelling, because a cancelled run could leave a merged release PR untagged. The token needs `workflows: write` for the same reason as in item 2: the release branch gets force-updated from `main`.
 
@@ -169,16 +169,16 @@ A sync lands as a merge commit, which triggers nothing by itself. The maintainer
 The `remind` job keeps at most one open issue, found by a `release-blocked` label, which the job creates if missing. It's opened or updated when any of these is true:
 
 - An `autorelease: pending` PR has been open for over 24 hours. That covers failed checks, a paused automation and a held major.
-- An `automation/go-patch` PR has been open for over 48 hours.
+- An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count.
 - The newest GitHub Release is over 2 hours old and its tag's `publish` check run didn't succeed.
 - A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that's resolved. Re-running `release-please` clears it.
-- The latest `push` run of `release-please.yml`, or the latest run of `go-toolchain.yml`, failed. An expired app key would show up here, when nothing else would, because no PR would ever appear.
+- The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, failed. Failed means `failure`, `timed_out` or `startup_failure`. A manual dry run can't hide a failing schedule. An expired app key would show up here, when nothing else would, because no PR would ever appear.
 
 A waiting Go minor PR doesn't count. It's waiting for the maintainer by design, and the open PR is its own notice.
 
 The body lists the reasons and links to each item. The job edits the issue only if the body changed, so a daily run sends no repeat notifications. When none of these is true, it closes the issue with a comment.
 
-The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job always assigns it to `avargaskun`, the maintainer, both when opening it and when updating it. Any other issue a workflow opens must do the same. The login sits in the workflow rather than in a repository variable, so it can't be left unset and leave the issue unseen. `remind` also needs `actions: read` to read the runs.
+The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job always assigns it to `avargaskun`, the maintainer, both when opening it and when updating it. Any other issue a workflow opens must do the same. The login sits in the workflow rather than in a repository variable, so it can't be left unset and leave the issue unseen. `remind` also needs `actions: read` to read the runs, and `checks: read` and `contents: read` to read a Release and its check runs.
 
 The check logic stays inline in the workflow, as `dependabot-auto-merge.yml` does.
 

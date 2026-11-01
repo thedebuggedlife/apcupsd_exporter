@@ -100,3 +100,100 @@ jobs:
           if [ "$armed" = true ]; then
             gh pr merge --disable-auto "$number"
           fi
+
+  remind:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: write
+      pull-requests: read
+    concurrency:
+      group: remind
+      cancel-in-progress: false
+    steps:
+      - name: Update the reminder
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release_pr_max_age=86400
+          go_patch_max_age=172800
+          publish_grace=7200
+          merged_pending_grace=3600
+          title='Automatic release is blocked'
+          assignee=avargaskun
+          label=release-blocked
+
+          work="$(mktemp -d)"
+          found="$work/found"
+          reasons="$work/reasons"
+          body_file="$work/body"
+          : > "$found"
+
+          gh label create "$label" --force --description 'The automatic release is stalled'
+
+          prs="$(gh pr list --label 'autorelease: pending' --state open --limit 100 --json number,url,createdAt)"
+          jq -r --argjson max "$release_pr_max_age" '.[] | select(now - (.createdAt | fromdateiso8601) > $max) | "- Release PR #\(.number) has been open for over 24 hours: \(.url)"' <<< "$prs" >> "$found"
+
+          prs="$(gh pr list --head automation/go-patch --state open --limit 100 --json number,url,createdAt,isCrossRepository)"
+          jq -r --argjson max "$go_patch_max_age" '.[] | select((.isCrossRepository | not) and (now - (.createdAt | fromdateiso8601) > $max)) | "- Go patch PR #\(.number) has been open for over 48 hours: \(.url)"' <<< "$prs" >> "$found"
+
+          releases="$(gh release list --exclude-drafts --limit 1 --json tagName,publishedAt)"
+          tag="$(jq -r --argjson grace "$publish_grace" '.[0] | select(. != null and (now - (.publishedAt | fromdateiso8601) > $grace)) | .tagName' <<< "$releases")"
+          if [ -n "$tag" ]; then
+            checks="$(gh api "repos/$GH_REPO/commits/$tag/check-runs?check_name=publish")"
+            succeeded="$(jq '[.check_runs[] | select(.conclusion == "success")] | length' <<< "$checks")"
+            if [ "$succeeded" -eq 0 ]; then
+              echo "- Release $tag is over 2 hours old and its \`publish\` check run didn't succeed: $GITHUB_SERVER_URL/$GH_REPO/releases/tag/$tag" >> "$found"
+            fi
+          fi
+
+          prs="$(gh pr list --label 'autorelease: pending' --state merged --limit 100 --json number,url,mergedAt)"
+          jq -r --argjson grace "$merged_pending_grace" '.[] | select(now - (.mergedAt | fromdateiso8601) > $grace) | "- Merged PR #\(.number) still carries `autorelease: pending` an hour after merging: \(.url)"' <<< "$prs" >> "$found"
+
+          runs="$(gh run list --workflow release-please.yml --event push --limit 1 --json conclusion,url)"
+          jq -r '.[] | select(.conclusion | IN("failure", "timed_out", "startup_failure")) | "- The latest push run of release-please.yml failed: \(.url)"' <<< "$runs" >> "$found"
+
+          runs="$(gh run list --workflow go-toolchain.yml --event schedule --limit 1 --json conclusion,url)"
+          jq -r '.[] | select(.conclusion | IN("failure", "timed_out", "startup_failure")) | "- The latest scheduled run of go-toolchain.yml failed: \(.url)"' <<< "$runs" >> "$found"
+
+          issues="$(gh issue list --label "$label" --state open --limit 100 --json number,body)"
+          number="$(jq -r 'sort_by(.number) | .[0].number // empty' <<< "$issues")"
+          existing="$(jq -r 'sort_by(.number) | .[0].body // empty' <<< "$issues")"
+          existing="${existing//$'\r'/}"
+
+          LC_ALL=C sort "$found" > "$reasons"
+
+          if [ ! -s "$reasons" ]; then
+            if [ -n "$number" ]; then
+              gh issue close "$number" --comment 'The release automation is no longer blocked.'
+            else
+              echo '::notice::Nothing is blocking the release'
+            fi
+            exit 0
+          fi
+
+          {
+            echo 'The automatic release is blocked:'
+            echo
+            cat "$reasons"
+            echo
+            echo 'This issue closes itself once none of this applies any more.'
+          } > "$body_file"
+
+          if [ -z "$number" ]; then
+            gh issue create --title "$title" --label "$label" --assignee "$assignee" --body-file "$body_file"
+            exit 0
+          fi
+
+          wanted="$(cat "$body_file")"
+          edit=(--add-assignee "$assignee")
+          if [ "$wanted" != "$existing" ]; then
+            edit+=(--body-file "$body_file")
+          fi
+          gh issue edit "$number" "${edit[@]}"
