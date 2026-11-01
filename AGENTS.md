@@ -137,7 +137,7 @@ After the action runs, the `release-please` job finds the open PR labelled `auto
 | The repository variable `AUTO_RELEASE` is exactly `on`, and the version in the PR title has the same major as the manifest on `main` | `gh pr merge --auto --squash` |
 | Anything else, including a title that doesn't parse and a manifest that can't be read | Turn auto-merge off if it's on |
 
-The check fails closed: an unset `AUTO_RELEASE` holds, and so does `ON`. A held PR is the signal. The maintainer can merge it by hand, and that is how a major goes out.
+The check fails closed: an unset `AUTO_RELEASE` holds, and so does `ON`. While `AUTO_RELEASE` is `on`, a held PR also requests the maintainer's review. A pause doesn't, because it's their own choice, and the reminder covers it. The maintainer can merge it by hand, and that is how a major goes out.
 
 - **To pause all releases,** set `AUTO_RELEASE` to anything but `on` (or delete it) and run `release-please.yml` from the Actions tab, where it is shown as `Release`, so the change takes effect at once. The release PR stays open and keeps collecting commits. To resume, set it back to `on` and run the workflow. This is also how to batch several PRs into one release.
 - **A pause stops releases, not merges.** Dependabot and Go patch PRs still auto-merge into `main`, and the next release picks them up. The hold for a Go patch is separate and still applies: see [Go toolchain updates](#go-toolchain-updates).
@@ -148,7 +148,7 @@ The check fails closed: an unset `AUTO_RELEASE` holds, and so does `ON`. A held 
 The `remind` job in `release-please.yml` keeps at most one open issue, titled `Automatic release is blocked` and labelled `release-blocked`, which the job creates if missing. It runs daily and on `workflow_dispatch`, with a read-only `GITHUB_TOKEN` plus `issues: write` and `actions: read`. It opens or updates the issue when any of these is true:
 
 - An `autorelease: pending` PR has been open for over 24 hours. That covers failed checks, a paused automation and a held major.
-- An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count. A waiting Go minor PR doesn't count either, because the open PR is its own notice.
+- An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count. A waiting Go minor PR doesn't count either, because it has already requested the maintainer's review.
 - The newest GitHub Release is over 2 hours old and its tag's own `ci.yml` run has no successful `publish` job. A `publish` run on `main` for the same commit doesn't count.
 - A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that is resolved. Re-running `release-please.yml` clears it.
 - The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, ended in `failure`, `timed_out` or `startup_failure`. An expired app key shows up here, when nothing else would. Only a re-run of that failed run, or the next push, clears the `release-please.yml` line, because a dispatch isn't a push run.
@@ -188,7 +188,7 @@ Limits:
 | Base image moving to a new tag | Held for review | Held for review |
 | Unknown update type | Held for review | Held for review |
 
-"Held for review" means the PR stays open with auto-merge off. A required check can stop any of these merges, because auto-merge only ever waits for them.
+"Held for review" means the PR stays open with auto-merge off, and the workflow requests the maintainer's review. A required check can stop any of these merges, because auto-merge only ever waits for them.
 
 - **Every update in a PR must qualify.** One minor holds a whole PR, which is why the groups are split by level.
 - **Patch and minor mean a move between plain `X.Y.Z` versions.** Pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases, `+incompatible` versions and bare commit SHAs count as unknown. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
@@ -203,7 +203,7 @@ Limits:
 - **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, with no required approvals.
 - **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, `allow_auto_merge`, and an Actions event policy.
 - **An Actions event policy keeps `pull_request_target` working.** From 2 December 2026, GitHub blocks that event by default on public repositories with no applicable policy. The repository policy under **Settings > Actions > Policies** allows it for `.github/workflows/dependabot-auto-merge.yml` only. Its `allowed_events` is an allow-list, so never remove its `workflow_path` condition, or it blocks every other event in the repository. A blocked run ends as `startup_failure` with no jobs, and the Dependabot PR stays open.
-- **`.github/CODEOWNERS` requests the maintainer's review on every PR they don't open themselves.** Dependabot's own `reviewers` option no longer exists, so this is what puts a held PR in front of someone. It also covers Go toolchain and release PRs. It doesn't delay auto-merge, because branch protection doesn't require code owner approval, so an auto-merged PR may be gone by the time the notification is read.
+- **Review is requested only when a PR is held.** The step that holds a PR calls `POST pulls/{number}/requested_reviewers` for the maintainer, in all three workflows that can hold one. Nothing else pings them, and the repository has no `CODEOWNERS`, which would ping on every PR. Dependabot's own `reviewers` option no longer exists.
 
 ### The `automated-releases` app
 
@@ -235,6 +235,7 @@ Dependabot's `docker` updater can't edit `go.mod`, so `.github/workflows/go-tool
 - **No change when nothing is new.** An open PR with the right title is left alone (for a patch, once its auto-merge is on), so CI doesn't re-run each day. A PR that GitHub reports as `CONFLICTING` is rebuilt from `main`, which is routine because Dependabot's digest PRs edit the same `Dockerfile` lines. Only a PR from a branch in this repo counts; a fork PR with the same branch name is ignored.
 - **Patch PRs get `gh pr merge --auto --squash`** and wait for the required checks. Minor PRs don't, so they need a manual merge.
 - **Patch auto-merge is re-armed on every run.** A current patch PR whose auto-merge is off gets only `gh pr merge --auto --squash`, with no rebuild or push. That retries a failed arming and also undoes a maintainer turning it off by hand, deliberately: Go patches always go automatically. To hold one, turn the `Go toolchain` workflow off in the Actions tab first, then run `gh pr merge --disable-auto <n>`, because auto-merge is state on the PR and the next run would re-arm it in the other order. A disarmed PR with green checks merges at once when re-armed, because `gh` merges immediately in the `CLEAN` state.
+- **A Go minor PR requests the maintainer's review** each time it opens or is rebuilt. A Go patch PR doesn't, because it auto-merges.
 - **Closing a Go PR brings it back on the next run,** for a patch or a minor. To decline a Go minor, leave its PR open.
 - **A rebuild force-pushes the fixed branch** and drops any commit on it, so fixes for a Go PR land on `main` in their own PR.
 - **Only a missing `golang` tag counts as waiting for the image.** Any other failure to read an image digest fails the run, so a persistent registry problem is visible instead of silently stopping updates.
@@ -266,7 +267,7 @@ What differs from upstream, and why:
 | Current Go and `client_golang` | Upstream's `client_golang` v1.12.1 lets an oversized NIS message crash the process |
 | The fake NIS and golden output files | They pin the frozen metrics against the real client and the real text format |
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `.github/CODEOWNERS`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 

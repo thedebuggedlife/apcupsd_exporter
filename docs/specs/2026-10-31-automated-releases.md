@@ -73,7 +73,7 @@ Dependabot can't do this: it doesn't manage the `go` line here, and its `docker`
 - Is rebuilt from `main` if GitHub reports it as conflicted. This will be routine, because the two Go PRs and Dependabot's digest PRs edit the same `Dockerfile` lines. Otherwise, a run with nothing new changes nothing, so CI isn't re-run each time `main` moves.
 - Is titled `fix(deps): bump Go to X.Y.Z`, so both kinds release as a patch.
 
-**Patch PRs** turn on auto-merge with `gh pr merge --auto --squash`, which waits for `test`, `lint`, `vuln` and `image`. A patch PR that gets stuck raises the [reminder](#reminder). **Minor PRs** don't turn on auto-merge.
+**Patch PRs** turn on auto-merge with `gh pr merge --auto --squash`, which waits for `test`, `lint`, `vuln` and `image`. A patch PR that gets stuck raises the [reminder](#reminder). **Minor PRs** don't turn on auto-merge, and they request the maintainer's review, because each one waits for them.
 
 **Credentials:** the PR is opened with an `automated-releases` app token, because a PR opened with `GITHUB_TOKEN` starts no CI, so required checks would never report. The token is created only after all edits are done, and no new third-party action receives it. The checkout uses `persist-credentials: false`. The token needs `contents: write`, `pull-requests: write` and `workflows: write`. The last is because the fixed branches survive a merge, so a later force-push can carry them across workflow changes on `main`, which GitHub may refuse without it. That failure would only appear on a later Go release, and it's the same permission `dependabot-auto-merge.yml` already holds.
 
@@ -151,7 +151,7 @@ After the action, the job finds the open PR labelled `autorelease: pending` itse
 | `AUTO_RELEASE` is `on`, and the version in the PR title has the same major as the manifest | `gh pr merge --auto --squash` |
 | Anything else, including an unparsable title | Turn auto-merge off if it's on |
 
-The check is deliberately fail-closed: an unset `AUTO_RELEASE` holds, and so does a title that doesn't parse. A held PR is the signal. The maintainer can merge it by hand, and that's how a major goes out.
+The check is deliberately fail-closed: an unset `AUTO_RELEASE` holds, and so does a title that doesn't parse. While `AUTO_RELEASE` is `on`, a held PR also requests the maintainer's review. A pause doesn't, because it's their own choice, and the reminder covers it. The maintainer can merge it by hand, and that's how a major goes out.
 
 `AUTO_RELEASE` stops releases without a code change. It pauses a batch too: land the related PRs, then set it back to `on` and run the workflow.
 
@@ -175,7 +175,7 @@ The `remind` job keeps at most one open issue, found by a `release-blocked` labe
 - A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that's resolved. Re-running `release-please` clears it.
 - The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, failed. Failed means `failure`, `timed_out` or `startup_failure`. A manual dry run can't hide a failing schedule. An expired app key would show up here, when nothing else would, because no PR would ever appear.
 
-A waiting Go minor PR doesn't count. It's waiting for the maintainer by design, and the open PR is its own notice.
+A waiting Go minor PR doesn't count. It's waiting for the maintainer by design, and it has already requested their review.
 
 The body lists the reasons and links to each item. The job edits the issue only if the body changed, so a daily run sends no repeat notifications. When none of these is true, it closes the issue with a comment.
 
