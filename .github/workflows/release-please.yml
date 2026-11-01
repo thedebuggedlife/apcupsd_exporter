@@ -107,7 +107,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read
-      checks: read
       contents: read
       issues: write
       pull-requests: read
@@ -135,7 +134,7 @@ jobs:
           body_file="$work/body"
           : > "$found"
 
-          gh label create "$label" --force --description 'The automatic release is stalled'
+          gh label create "$label" --force --color B60205 --description 'The automatic release is stalled'
 
           prs="$(gh pr list --label 'autorelease: pending' --state open --limit 100 --json number,url,createdAt)"
           jq -r --argjson max "$release_pr_max_age" '.[] | select(now - (.createdAt | fromdateiso8601) > $max) | "- Release PR #\(.number) has been open for over 24 hours: \(.url)"' <<< "$prs" >> "$found"
@@ -146,20 +145,25 @@ jobs:
           releases="$(gh release list --exclude-drafts --limit 1 --json tagName,publishedAt)"
           tag="$(jq -r --argjson grace "$publish_grace" '.[0] | select(. != null and (now - (.publishedAt | fromdateiso8601) > $grace)) | .tagName' <<< "$releases")"
           if [ -n "$tag" ]; then
-            checks="$(gh api "repos/$GH_REPO/commits/$tag/check-runs?check_name=publish")"
-            succeeded="$(jq '[.check_runs[] | select(.conclusion == "success")] | length' <<< "$checks")"
+            tag_runs="$(gh run list --workflow ci.yml --event push --branch "$tag" --limit 1 --json databaseId)"
+            run_id="$(jq -r '.[0].databaseId // empty' <<< "$tag_runs")"
+            succeeded=0
+            if [ -n "$run_id" ]; then
+              run_jobs="$(gh run view "$run_id" --json jobs)"
+              succeeded="$(jq '[.jobs[] | select(.name == "publish")] | if length == 1 and .[0].conclusion == "success" then 1 else 0 end' <<< "$run_jobs")"
+            fi
             if [ "$succeeded" -eq 0 ]; then
-              echo "- Release $tag is over 2 hours old and its \`publish\` check run didn't succeed: $GITHUB_SERVER_URL/$GH_REPO/releases/tag/$tag" >> "$found"
+              echo "- Release $tag is over 2 hours old and its \`publish\` job didn't succeed: $GITHUB_SERVER_URL/$GH_REPO/releases/tag/$tag" >> "$found"
             fi
           fi
 
           prs="$(gh pr list --label 'autorelease: pending' --state merged --limit 100 --json number,url,mergedAt)"
           jq -r --argjson grace "$merged_pending_grace" '.[] | select(now - (.mergedAt | fromdateiso8601) > $grace) | "- Merged PR #\(.number) still carries `autorelease: pending` an hour after merging: \(.url)"' <<< "$prs" >> "$found"
 
-          runs="$(gh run list --workflow release-please.yml --event push --limit 1 --json conclusion,url)"
+          runs="$(gh run list --workflow release-please.yml --event push --status completed --limit 1 --json conclusion,url)"
           jq -r '.[] | select(.conclusion | IN("failure", "timed_out", "startup_failure")) | "- The latest push run of release-please.yml failed: \(.url)"' <<< "$runs" >> "$found"
 
-          runs="$(gh run list --workflow go-toolchain.yml --event schedule --limit 1 --json conclusion,url)"
+          runs="$(gh run list --workflow go-toolchain.yml --event schedule --status completed --limit 1 --json conclusion,url)"
           jq -r '.[] | select(.conclusion | IN("failure", "timed_out", "startup_failure")) | "- The latest scheduled run of go-toolchain.yml failed: \(.url)"' <<< "$runs" >> "$found"
 
           issues="$(gh issue list --label "$label" --state open --limit 100 --json number,body)"
