@@ -104,7 +104,7 @@ Release-please reads the commit titles since the last release.
 | A title that isn't a conventional commit | No release |
 | `Revert "fix: a (#12)"`, which GitHub's Revert button gives a PR | Parses to nothing, so no release follows. Retitle it `revert:` or `fix:` |
 
-`Release-As: X.Y.Z` in a commit body forces a version, as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. The title isn't the only input: a body paragraph that starts with a conventional prefix also counts, for example a `docs: x` PR whose body has a paragraph starting `fix: `. A multi-commit squash is safe, because GitHub prefixes its lines with `* `.
+`Release-As: X.Y.Z` in a commit body forces a version, as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. `exclude-paths` also drops a commit with no files, so an empty `Release-As` commit opens no release PR: a forced release must touch a file outside those paths. The title isn't the only input: a body paragraph that starts with a conventional prefix also counts, for example a `docs: x` PR whose body has a paragraph starting `fix: `. A multi-commit squash is safe, because GitHub prefixes its lines with `* `.
 
 Those are release-please's defaults for its `go` release type, except that `feat` stays a minor below `1.0.0` because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. Item 4 of #11 needs that, because new metrics go in a minor release.
 
