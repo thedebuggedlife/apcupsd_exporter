@@ -19,6 +19,16 @@ const (
 	namespace = "apcupsd"
 )
 
+// Version is the exporter's version, set at build time with -ldflags -X.
+var Version = "dev"
+
+var buildInfo = prometheus.NewDesc(
+	prometheus.BuildFQName(namespace, "exporter", "build_info"),
+	"The version the exporter was built from, with a constant value of 1.",
+	[]string{"version"},
+	nil,
+)
+
 // An Exporter is a Prometheus exporter for apcupsd metrics.
 // It wraps all apcupsd metrics collectors and provides a single global
 // exporter which can serve metrics.
@@ -47,12 +57,15 @@ func New(fn ClientFunc) *Exporter {
 // Describe sends all the descriptors of the collectors included to
 // the provided channel.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
+	ch <- buildInfo
 	NewUPSCollector(nil).Describe(ch)
 }
 
 // Collect sends the collected metrics from each of the collectors to
 // prometheus.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(buildInfo, prometheus.GaugeValue, 1, Version)
+
 	err := e.withCollectors(func(cs []prometheus.Collector) {
 		for _, c := range cs {
 			c.Collect(ch)
