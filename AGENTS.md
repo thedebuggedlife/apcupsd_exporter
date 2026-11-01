@@ -120,6 +120,7 @@ A PR's squash title becomes the commit title on `main`, and release-please reads
 | `Revert "fix: a (#12)"`, which GitHub's Revert button gives a PR | Parses to nothing, so no release follows. Retitle it `revert:` or `fix:` |
 
 - **`Release-As: X.Y.Z` in a commit body forces a version,** as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. It is also how an upstream sync gets its own release.
+- **A forced release must touch a file outside `exclude-paths`.** `exclude-paths` drops a commit with no files, so the usual empty `Release-As` commit opens no release PR. `fix(deps): release ...` on a commit that touches a file such as `AGENTS.md` gives the next patch, with no `Release-As` needed.
 - **`feat` stays a minor below `1.0.0`,** because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. New metrics go in a minor release.
 - **`exclude-paths`** in `release-please-config.json` drops commits that only touch `.github`, `docs`, `scripts`, `testdata` or `internal/fakenis`, whatever their title. It matches directories only, so it can't list `README.md`.
 - **Dependabot titles are prefixed** so they count: `fix(deps)` for `gomod` and `docker`, which releases a patch, and `ci(deps)` for `github-actions`, which doesn't release, because Actions aren't in the image. The Go toolchain PRs are titled `fix(deps): bump Go to X.Y.Z`.
