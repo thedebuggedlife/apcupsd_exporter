@@ -4,6 +4,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62
 # Set environment variables to build a static binary
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 ENV CGO_ENABLED=0 \
     GOOS=$TARGETOS \
     GOARCH=$TARGETARCH
@@ -19,7 +20,7 @@ RUN go mod download
 COPY . .
 
 # Build the application from the correct entry point
-RUN go build -trimpath -ldflags="-s -w" -o service ./cmd/apcupsd_exporter
+RUN go build -trimpath -ldflags="-s -w -X github.com/mdlayher/apcupsd_exporter.Version=${VERSION}" -o service ./cmd/apcupsd_exporter
 
 # Use a minimal base image for the final stage
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329

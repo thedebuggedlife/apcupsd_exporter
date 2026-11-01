@@ -34,21 +34,28 @@ func TestExporterDescribeDoesNotDial(t *testing.T) {
 	want := []string{
 		"apcupsd_battery_charge_percent",
 		"apcupsd_battery_cumulative_time_on_seconds_total",
+		"apcupsd_battery_date_time_seconds",
 		"apcupsd_battery_nominal_volts",
 		"apcupsd_battery_number_transfers_total",
 		"apcupsd_battery_time_left_seconds",
 		"apcupsd_battery_time_on_seconds",
 		"apcupsd_battery_volts",
+		"apcupsd_exporter_build_info",
 		"apcupsd_info",
 		"apcupsd_internal_temperature_celsius",
 		"apcupsd_last_selftest_time_seconds",
 		"apcupsd_last_transfer_off_battery_time_seconds",
+		"apcupsd_last_transfer_on_battery_reason",
 		"apcupsd_last_transfer_on_battery_time_seconds",
+		"apcupsd_line_frequency_hertz",
 		"apcupsd_line_nominal_volts",
 		"apcupsd_line_volts",
 		"apcupsd_nominal_power_watts",
 		"apcupsd_output_amps",
 		"apcupsd_output_volts",
+		"apcupsd_status_low_battery",
+		"apcupsd_status_on_battery",
+		"apcupsd_status_online",
 		"apcupsd_ups_load_percent",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -72,7 +79,32 @@ func TestExporterDialFailureFailsScrape(t *testing.T) {
 	}
 }
 
-// The golden files come from the v0.3.0 binary, so never regenerate them from the working tree.
+func TestBuildInfoReportsVersion(t *testing.T) {
+	old := Version
+	Version = "v1.2.3"
+	defer func() { Version = old }()
+
+	messages, err := fakenis.Response("full")
+	if err != nil {
+		t.Fatalf("failed to load response: %v", err)
+	}
+
+	srv, err := fakenis.Listen("127.0.0.1:0", messages)
+	if err != nil {
+		t.Fatalf("failed to start fake NIS: %v", err)
+	}
+	defer srv.Close()
+
+	out := testCollector(t, New(func(ctx context.Context) (*apcupsd.Client, error) {
+		return apcupsd.DialContext(ctx, "tcp", srv.Addr())
+	}))
+
+	if want := `apcupsd_exporter_build_info{version="v1.2.3"} 1`; !strings.Contains(string(out), want) {
+		t.Errorf("missing %q in output:\n%s", want, out)
+	}
+}
+
+// The golden files come from the v0.3.0 binary plus hand-added lines for newer metrics, so never regenerate them from the working tree.
 func TestOutputBaseline(t *testing.T) {
 	for _, name := range []string{"full", "no-outcurnt"} {
 		t.Run(name, func(t *testing.T) {

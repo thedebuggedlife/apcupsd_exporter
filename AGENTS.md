@@ -19,7 +19,7 @@ gofmt -l .                                      # must print nothing; the CI lin
 go run ./cmd/apcupsd_exporter -apcupsd.addr=127.0.0.1:3551
 go run ./cmd/apcupsd_exporter -healthcheck      # probes /healthz on -telemetry.addr, exits 0 or 1
 go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:3551; -addr changes it
-docker build -t apcupsd_exporter .
+docker build -t apcupsd_exporter .                # add --build-arg VERSION=vX.Y.Z to set the build_info version
 docker buildx build --platform linux/amd64,linux/arm,linux/arm64 .  # needs a docker-container builder or the containerd image store
 scripts/test-container.sh <image>               # both healthcheck container tests; needs docker and curl
 scripts/test-go-toolchain.sh                    # tests scripts/go-toolchain.sh; needs jq
@@ -41,7 +41,9 @@ Behaviour that spans these layers:
 
 - **Failure is all-or-nothing.** A dial or `Status()` error becomes `prometheus.NewInvalidMetric`, which fails the gather, so promhttp returns 500 for the whole page, including `go_*` and `process_*`. Prometheus records this as `up == 0`. A panic in `Collect` ends the same way, because `client_golang` recovers it. `NewUPSCollector(nil)` exists only to supply `Desc`s, for `Exporter.Describe` and for that error, and a nil-source collector must never have `Collect` called.
 - **One bad field fails the scrape.** The library's `Status()` returns an error if any single NIS field fails to parse, including fields no metric uses. The exceptions are `ALARMDEL`, whose parse error the library ignores because the field comes in many formats, and unknown keys. Only timestamps accept `N/A`; on a number or duration field it is a parse error.
-- **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero. The one exception is `apcupsd_output_amps`, which is omitted unless it is above 0, so a true 0 A reading is omitted too. `docs/metrics.md` has the behaviour per metric.
+- **Unreported fields read as 0.** `apcupsd.Status` is a plain struct, so a field the UPS doesn't report can't be told apart from a real zero. The exceptions are `apcupsd_output_amps` and `apcupsd_line_frequency_hertz`, which are omitted unless above 0, so a true 0 is omitted too, and the other metrics added in `v0.5.0`, which are omitted when their source is unusable. `docs/metrics.md` has the behaviour per metric.
+- **Status gauges prefer `STATFLAG`.** apcupsd replaces all of `STATUS` with `COMMLOST` or `SHUTTING DOWN`, so `STATUS` alone reads neither online nor on battery during a shutdown. `parseUPSState` in `upsstate.go` uses the `STATFLAG` bits, falls back to the `STATUS` words, and omits all three gauges on lost contact, because the bits go stale then, or when neither source shows a power state. A readable `STATFLAG` with neither power bit, as apcupsd can serve just after it starts, counts as no power state, or `apcupsd_status_online == 0` would fire for an unknown UPS.
+- **`Version` is set at build time.** The `Dockerfile` passes its `VERSION` build argument to `-ldflags -X`, and `publish` sets it from `metadata-action`'s `version` output, so `vX.Y.Z` on a tag and `edge` on `main`. Everything else is `dev`, including the `image` and `scan` builds and the golden files. `-X` silently ignores a wrong symbol path, so check the label after changing it. `apcupsd_exporter_build_info` comes from the `Exporter`, not `UPSCollector`, because it isn't about a UPS.
 - **`Exporter.Describe` is static.** It sends descriptors without touching the network, so registration never blocks on the NIS and the collector is always checked.
 - **The 5s timeout covers the whole NIS exchange.** `newClient` copies the context deadline onto the connection, so the same 5s bounds the dial and `Client.Status()`. That deadline is the only thing that frees a stuck `Status()`: the library holds a lock while reading, so `Client.Close()` blocks behind it instead of interrupting it. Any `ClientFunc` must set a connection deadline.
 - **A NIS message over 256 bytes panics the library.** `Client.Status()` reads each message into a 256-byte buffer and slices it with the length the server sent. `client_golang` recovers the panic, so the scrape returns 500 and the process survives. With v1.12.1 nothing recovered it and the process exited, so don't downgrade `client_golang` below v1.25.0 without checking this again. Bounds-checking the length needs a library change. The recovered panic puts the Go stack trace in the 500 body; `HandlerOpts.DisableErrorMessages` would hide it, but would hide dial errors too.
@@ -57,8 +59,8 @@ Behaviour that spans these layers:
 ## Testing notes
 
 - The root package's collector tests scrape through `testCollector`, which uses a `PedanticRegistry` and fails unless the response is 200. Tests that expect a failed scrape use `testCollectorStatus`.
-- A table case with no `matches`, such as `empty`, only proves the gather succeeds.
-- `TestOutputBaseline` runs raw NIS text through the fake NIS, the real client, the `Exporter` and promhttp, and compares the whole response with `testdata/golden/`. Those files came from the `v0.3.0` binary (`3f531e59`), with the `apcupsd_output_amps` lines added by hand. Never regenerate them from the working tree: a difference there means a frozen metric changed.
+- A table case with no `matches`, such as `empty`, proves only that the gather succeeds and that its `notMatches` are absent.
+- `TestOutputBaseline` runs raw NIS text through the fake NIS, the real client, the `Exporter` and promhttp, and compares the whole response with `testdata/golden/`. Those files came from the `v0.3.0` binary (`3f531e59`), with the lines for every newer metric added by hand. Never regenerate them from the working tree: a difference there means a frozen metric changed.
 - `TestMetricsCatalogueMatchesDescribe` takes the names from `Exporter.Describe`. Every described metric needs a table row in `docs/metrics.md`, and every `apcupsd_*` name anywhere in that file must be a described metric, so don't write the project's own name there.
 - `cmd/apcupsd_exporter/main_test.go` tests the binary's wiring with small local NIS listeners and the fake NIS. `TestScrapeFailsWhenNISNeverReplies` takes the full 5s and `TestRunHealthcheckTimesOutOnSilentServer` the full 3s, by design. `TestMain` runs the real `main` when `APCUPSD_EXPORTER_TEST_RUN_MAIN` is set, so `TestHealthcheckFlagRunsBeforeStartupChecks` can check flag handling in a subprocess. `TestAcceptedMetricsPathsServeOnRealMux` serves every accepted row of `metricsPathCases`, so a new path needs only a row there.
 - `scripts/test-container.sh` runs the image's own `HEALTHCHECK` with shorter timings, in a healthy and a mismatched `-telemetry.addr` container. It must keep working on bash 3.2 and without `timeout`, for macOS.
@@ -72,7 +74,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 
 ## Rules for this fork
 
-- **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes, because a rename breaks dashboards silently. `apcupsd_output_amps`, which came with an upstream merge, is the only metric added since `v0.3.0`.
+- **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes, because a rename breaks dashboards silently. The only metrics added since `v0.3.0` are `apcupsd_output_amps`, which came with an upstream merge, and the ones added in `v0.5.0`.
 - **`latest` moves only on a release tag,** and tags come only from release-please. See [Release flow](#release-flow).
 - **Never touch upstream.** No PRs, issues, or pushes.
 - **Squash only.** Merge commits and rebase merges are off for the repository. The one exception is an upstream sync, which turns merge commits on for that merge. See [Upstream relationship](#upstream-relationship).
@@ -105,7 +107,7 @@ How a release happens:
 
 `ci.yml` has no `release` job, because release-please creates the Release and `gh release create` would fail on an existing one. A publish that fails after the Release exists is what the [reminder](#the-release-reminder) is for. Tags are never moved, so a bad `vX.Y.Z` can only be fixed by a newer release.
 
-To check a release, confirm that `ghcr.io/thedebuggedlife/apcupsd_exporter:vX.Y.Z` exists for all three platforms and that `latest` has the same digest. Then run it against a real or fake NIS, confirm every `apcupsd_*` series from the previous release is still there with the same labels, and that the container reaches `healthy`.
+To check a release, confirm that `ghcr.io/thedebuggedlife/apcupsd_exporter:vX.Y.Z` exists for all three platforms and that `latest` has the same digest. Then run it against a real or fake NIS, confirm every `apcupsd_*` series from the previous release is still there with the same labels, that `apcupsd_exporter_build_info` shows `vX.Y.Z`, and that the container reaches `healthy`.
 
 ### What picks the version
 
@@ -267,6 +269,7 @@ What differs from upstream, and why:
 | The 5s scrape limit covers the whole NIS exchange, not just the dial | A NIS that accepts the connection and never answers would hang the scrape and leak a goroutine per scrape |
 | Static `Exporter.Describe` | A dial during registration can block startup for up to 5s, and makes the collector checked or unchecked depending on whether the daemon was up |
 | `apcupsd_output_amps` is omitted unless above 0 | The library exposes an unreported field as 0, so a UPS without `OUTCURNT` would show a constant 0 |
+| Status gauges, line frequency, battery date, last transfer reason and `apcupsd_exporter_build_info` | Alerts needn't parse labels, and upstream has none of them |
 | `-metrics.system` and a private registry | Lets a deployment expose only `apcupsd_*`. Unregistering from the default registry left `promhttp_*` behind and was fragile across `client_golang` upgrades |
 | `-telemetry.path` is validated at startup | An invalid value was a startup panic or a redirect loop |
 | `http.Server` timeouts | `http.ListenAndServe` has none |
@@ -276,7 +279,7 @@ What differs from upstream, and why:
 | Current Go and `client_golang` | Upstream's `client_golang` v1.12.1 lets an oversized NIS message crash the process |
 | The fake NIS and golden output files | They pin the frozen metrics against the real client and the real text format |
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `release-please-config.json`, `.release-please-manifest.json`, `CHANGELOG.md`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, `upsstate.go`, the static `Exporter.Describe`, `Version` and `apcupsd_exporter_build_info` in `apcupsdexporter.go`, the `apcupsd_output_amps` omission and the metrics added in `v0.5.0` in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 

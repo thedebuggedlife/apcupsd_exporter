@@ -6,7 +6,8 @@ keeps this file and the code in step: a metric with no row here, or a name here
 that the exporter doesn't describe, fails the tests.
 
 The NIS field is the key shown by `apcaccess status`. Each value is parsed by
-the `github.com/mdlayher/apcupsd` library.
+the `github.com/mdlayher/apcupsd` library, except that the exporter reads the
+text of `BATTDATE` and `STATFLAG` itself.
 
 The last column uses two terms:
 
@@ -37,25 +38,67 @@ The last column uses two terms:
 | `apcupsd_last_selftest_time_seconds` | gauge | UNIX time, seconds | `ups` | `LASTSTEST` | Reads 0, and so does `N/A` |
 | `apcupsd_nominal_power_watts` | gauge | watts | `ups` | `NOMPOWER` | Reads 0 |
 | `apcupsd_internal_temperature_celsius` | gauge | degrees Celsius | `ups` | `ITEMP` | Reads 0 |
+| `apcupsd_status_online` | gauge | 1 or 0 | `ups` | `STATFLAG`, or `STATUS` | Omitted, see [Status gauges](#status-gauges) |
+| `apcupsd_status_on_battery` | gauge | 1 or 0 | `ups` | `STATFLAG`, or `STATUS` | Omitted, see [Status gauges](#status-gauges) |
+| `apcupsd_status_low_battery` | gauge | 1 or 0 | `ups` | `STATFLAG`, or `STATUS` | Omitted, see [Status gauges](#status-gauges) |
+| `apcupsd_line_frequency_hertz` | gauge | hertz | `ups` | `LINEFREQ` | Omitted, and also omitted on a reading of 0 |
+| `apcupsd_battery_date_time_seconds` | gauge | UNIX time, seconds | `ups` | `BATTDATE` | Omitted, and also omitted unless the value is `YYYY-MM-DD` |
+| `apcupsd_last_transfer_on_battery_reason` | gauge | none, always 1 | `reason`, `ups` | `LASTXFER` | Omitted |
+| `apcupsd_exporter_build_info` | gauge | none, always 1 | `version` | None, set when the exporter is built | Always present on a successful scrape |
 
 ## Notes
 
-- **`apcupsd_output_amps` is the only metric that can be missing.** It is sent
-  only when the value is above 0, because a constant 0 would be misleading on a
-  UPS that doesn't report `OUTCURNT`. The library can't tell that case from a
-  real reading of 0, so a true 0 A reading is omitted as well, and a UPS that
-  does report the field can gain and lose the series as its load changes.
-- **A 0 from any other metric doesn't prove the UPS measured 0.** For example,
-  `apcupsd_internal_temperature_celsius` reads 0 on a model with no temperature
-  sensor.
-- **`ups` comes from `UPSNAME` on every metric.** A UPS that doesn't report it
-  gets `ups=""`, which Prometheus treats the same as no `ups` label.
+- **`apcupsd_output_amps` and `apcupsd_line_frequency_hertz` are sent only when
+  the value is above 0,** because a constant 0 would be misleading on a UPS that
+  doesn't report the field. The library can't tell that case from a real reading
+  of 0, so a true 0 is omitted as well, and a UPS that does report `OUTCURNT` can
+  gain and lose the series as its load changes.
+- **A 0 from a metric marked "Reads 0" doesn't prove the UPS measured 0.** For
+  example, `apcupsd_internal_temperature_celsius` reads 0 on a model with no
+  temperature sensor.
+- **`ups` comes from `UPSNAME` on every metric that has it.** A UPS that doesn't
+  report it gets `ups=""`, which Prometheus treats the same as no `ups` label.
 - **`status` is the raw `STATUS` text,** so each change of state starts a new
   `apcupsd_info` series.
+- **`reason` is the raw `LASTXFER` text,** so each new reason starts a new
+  `apcupsd_last_transfer_on_battery_reason` series. It describes the most recent
+  transfer, including `No transfers since turnon`, which isn't a transfer. The
+  value says nothing about when it happened: use
+  `apcupsd_last_transfer_on_battery_time_seconds` for that.
+- **`BATTDATE` is the date the UPS reports for its battery.** On a USB UPS this
+  can be the battery's manufacture date, not the date it was replaced. It has no
+  time of day, so `apcupsd_battery_date_time_seconds` is midnight UTC on that
+  date. To alert on age, use
+  `time() - apcupsd_battery_date_time_seconds > 3 * 365 * 86400`. A `BATTDATE`
+  with slashes is omitted, because apcupsd allows both `mm/dd/yy` and `dd/mm/yy`
+  and nothing shows which one a UPS uses.
+- **`version` on `apcupsd_exporter_build_info`** is the image tag for a release,
+  such as `v0.5.0`, `edge` for a build from `main`, and `dev` for any other build.
+  A release commit is published from both, so an image pulled by its full commit
+  SHA can show either one.
 - **`TIMELEFT` is sent in minutes** and exported in seconds. `TONBATT` and
   `CUMONBATT` are sent in seconds.
 - **The two counters count from apcupsd startup,** so they reset when the daemon
   restarts.
+
+## Status gauges
+
+The three status gauges use the bits in `STATFLAG`, because apcupsd
+replaces all of the `STATUS` text with `SHUTTING DOWN` during a shutdown, while
+the bits stay correct. If `STATFLAG` is missing, unreadable or shows neither
+online nor on battery, they use the words `ONLINE`, `ONBATT` and `LOWBATT` from
+`STATUS` instead.
+
+All three are sent together, and all three are omitted when the state isn't
+known:
+
+- apcupsd has lost contact with the UPS, shown by either `STATUS` or `STATFLAG`.
+  The `STATFLAG` bits are out of date in that state.
+- Neither `STATFLAG` nor `STATUS` shows online or on battery. That includes a
+  scrape just after apcupsd starts, before it has read the UPS.
+
+Because they can be omitted, an alert on `apcupsd_status_on_battery == 1` resolves
+if contact is lost during an outage. Pair it with `absent()` if that matters.
 
 ## When a scrape fails
 
@@ -75,8 +118,9 @@ Failure is all-or-nothing. In each of these cases the whole response is an HTTP
 - A single NIS message is over 256 bytes. This panics in the library. The panic
   is recovered, so only that scrape fails and the exporter keeps running.
 
-Two kinds of field can't fail a scrape: unknown keys are ignored, and so is an
-unparsable `ALARMDEL`.
+Three kinds of field can't fail a scrape: unknown keys are ignored, so is an
+unparsable `ALARMDEL`, and an unusable `BATTDATE` or `STATFLAG` only omits the
+metrics that use it.
 
 ## `go_*`, `process_*` and `promhttp_*`
 

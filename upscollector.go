@@ -37,6 +37,12 @@ type UPSCollector struct {
 	LastSelftestTimeSeconds             *prometheus.Desc
 	NominalPowerWatts                   *prometheus.Desc
 	InternalTemperatureCelsius          *prometheus.Desc
+	StatusOnline                        *prometheus.Desc
+	StatusOnBattery                     *prometheus.Desc
+	StatusLowBattery                    *prometheus.Desc
+	LineFrequencyHertz                  *prometheus.Desc
+	BatteryDateTimeSeconds              *prometheus.Desc
+	LastTransferOnBatteryReason         *prometheus.Desc
 
 	ss StatusSource
 }
@@ -174,6 +180,48 @@ func NewUPSCollector(ss StatusSource) *UPSCollector {
 			nil,
 		),
 
+		StatusOnline: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "status_online"),
+			"Whether the UPS is running on AC input power (1) or not (0).",
+			labels,
+			nil,
+		),
+
+		StatusOnBattery: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "status_on_battery"),
+			"Whether the UPS is running on battery power (1) or not (0).",
+			labels,
+			nil,
+		),
+
+		StatusLowBattery: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "status_low_battery"),
+			"Whether the UPS reports a low battery (1) or not (0).",
+			labels,
+			nil,
+		),
+
+		LineFrequencyHertz: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "line_frequency_hertz"),
+			"Current AC input line frequency in hertz.",
+			labels,
+			nil,
+		),
+
+		BatteryDateTimeSeconds: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "battery_date_time_seconds"),
+			"UNIX timestamp of the battery date reported by the UPS.",
+			labels,
+			nil,
+		),
+
+		LastTransferOnBatteryReason: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "last_transfer_on_battery_reason"),
+			"Reason for last transfer to battery.",
+			[]string{"reason", "ups"},
+			nil,
+		),
+
 		ss: ss,
 	}
 }
@@ -200,6 +248,12 @@ func (c *UPSCollector) Describe(ch chan<- *prometheus.Desc) {
 		c.LastSelftestTimeSeconds,
 		c.NominalPowerWatts,
 		c.InternalTemperatureCelsius,
+		c.StatusOnline,
+		c.StatusOnBattery,
+		c.StatusLowBattery,
+		c.LineFrequencyHertz,
+		c.BatteryDateTimeSeconds,
+		c.LastTransferOnBatteryReason,
 	}
 
 	for _, d := range ds {
@@ -345,6 +399,25 @@ func (c *UPSCollector) Collect(ch chan<- prometheus.Metric) {
 		s.InternalTemp,
 		s.UPSName,
 	)
+
+	if state, ok := parseUPSState(s.Status, s.StatusFlags); ok {
+		ch <- prometheus.MustNewConstMetric(c.StatusOnline, prometheus.GaugeValue, boolValue(state.online), s.UPSName)
+		ch <- prometheus.MustNewConstMetric(c.StatusOnBattery, prometheus.GaugeValue, boolValue(state.onBattery), s.UPSName)
+		ch <- prometheus.MustNewConstMetric(c.StatusLowBattery, prometheus.GaugeValue, boolValue(state.lowBattery), s.UPSName)
+	}
+
+	if s.LineFrequency > 0 {
+		ch <- prometheus.MustNewConstMetric(c.LineFrequencyHertz, prometheus.GaugeValue, s.LineFrequency, s.UPSName)
+	}
+
+	// Slash dates are skipped: apcupsd allows both mm/dd/yy and dd/mm/yy.
+	if t, err := time.Parse(time.DateOnly, s.BatteryDate); err == nil {
+		ch <- prometheus.MustNewConstMetric(c.BatteryDateTimeSeconds, prometheus.GaugeValue, timestamp(t), s.UPSName)
+	}
+
+	if s.LastTransfer != "" {
+		ch <- prometheus.MustNewConstMetric(c.LastTransferOnBatteryReason, prometheus.GaugeValue, 1, s.LastTransfer, s.UPSName)
+	}
 }
 
 func timestamp(t time.Time) float64 {

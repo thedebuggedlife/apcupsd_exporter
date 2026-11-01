@@ -18,6 +18,9 @@ upstream's `apcupsd_*` metric names, labels and units, and its module path.
   used by the image's `HEALTHCHECK`.
 - **`apcupsd_output_amps`:** omitted when the UPS doesn't report it, instead of a
   constant 0. The [metric catalogue](docs/metrics.md) has the details.
+- **More metrics:** numeric status gauges, line frequency, battery date, last
+  transfer reason and `apcupsd_exporter_build_info`, listed in the
+  [metric catalogue](docs/metrics.md).
 - **`-metrics.system=false`:** leaves only the `apcupsd_*` metrics.
 - **Bounded scrapes:** the 5 second limit covers the whole NIS exchange, so a NIS
   that accepts a connection and never answers fails the scrape instead of hanging
