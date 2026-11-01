@@ -100,6 +100,11 @@ jobs:
           if [ "$armed" = true ]; then
             gh pr merge --disable-auto "$number"
           fi
+          # A pause is the maintainer's own choice, and the reminder covers it.
+          if [ "$AUTO_RELEASE" = on ]; then
+            gh api --method POST "repos/$GH_REPO/pulls/$number/requested_reviewers" \
+              --field 'reviewers[]=avargaskun' >/dev/null
+          fi
 
   remind:
     if: github.event_name != 'push'

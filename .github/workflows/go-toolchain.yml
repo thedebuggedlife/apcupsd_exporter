@@ -173,6 +173,15 @@ jobs:
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$body"
           fi
+      - name: Request review of a minor update
+        if: steps.token.outcome == 'success' && steps.pr.outputs.mode == 'rebuild' && matrix.kind == 'minor'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          number="$(gh pr list --head "$BRANCH" --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          [ -n "$number" ] || { echo "::error::No open PR for $BRANCH"; exit 1; }
+          gh api --method POST "repos/$GH_REPO/pulls/$number/requested_reviewers" \
+            --field 'reviewers[]=avargaskun' >/dev/null
       - name: Enable auto-merge
         if: steps.token.outcome == 'success' && matrix.kind == 'patch'
         env:

@@ -96,12 +96,15 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"
-      - name: Turn auto-merge off
+      - name: Hold the PR for review
         if: ${{ !cancelled() && steps.token.outcome == 'success' && steps.decide.outputs.merge != 'true' }}
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
+          NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = true ]; then
             gh pr merge --disable-auto "$PR_URL"
           fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$NUMBER/requested_reviewers" \
+            --field 'reviewers[]=avargaskun' >/dev/null
