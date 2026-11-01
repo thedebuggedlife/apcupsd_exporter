@@ -101,9 +101,10 @@ Release-please reads the commit titles since the last release.
 | `fix:`, `perf:` or `revert:`, with or without a scope | Next patch |
 | `!` before the colon, or a `BREAKING CHANGE` footer | Next major, `1.0.0` from here, which is [held](#hold-rules) |
 | `docs:`, `test:`, `ci:`, `chore:`, `build:`, `refactor:`, `style:` | No release. They go out with the next one |
-| A title that isn't a conventional commit, including a merge commit | No release |
+| A title that isn't a conventional commit | No release |
+| `Revert "fix: a (#12)"`, which GitHub's Revert button gives a PR | Parses to nothing, so no release follows. Retitle it `revert:` or `fix:` |
 
-`Release-As: X.Y.Z` in a commit body forces a version.
+`Release-As: X.Y.Z` in a commit body forces a version, as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. The title isn't the only input: a body paragraph that starts with a conventional prefix also counts, for example a `docs: x` PR whose body has a paragraph starting `fix: `. A multi-commit squash is safe, because GitHub prefixes its lines with `* `.
 
 Those are release-please's defaults for its `go` release type, except that `feat` stays a minor below `1.0.0` because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. Item 4 of #11 needs that, because new metrics go in a minor release.
 
@@ -162,7 +163,7 @@ Hand tags are retired, because a hand tag would get no GitHub Release and releas
 
 ### Upstream syncs
 
-A sync lands as a merge commit, which triggers nothing by itself. The maintainer reviewed it by merging it, so its changes go out with the next release, or at once with `Release-As`. The sync's own commits are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog. That's acceptable noise.
+A sync lands as a merge commit. The repository's `merge_commit_message` is `PR_TITLE`, so the commit reads `Merge pull request #N …`, a blank line, then the PR title. release-please splits on a blank line followed by a conventional prefix, so that title paragraph counts: `fix: sync upstream` releases a patch and `feat:` a minor. The sync PR is titled `chore: sync upstream`, so the merge doesn't release by itself and its changes go out with the next release. To release a sync at once, add a `Release-As: X.Y.Z` footer under that title paragraph in the merge dialog. The sync's own commits are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog. That's acceptable noise.
 
 ### Reminder
 
@@ -192,13 +193,13 @@ No test may push a tag or an image, so no release PR may be merged during testin
 4. Exercise the hold rules against recorded inputs, with a `gh` shim, for each row of the table including an unparsable title.
 5. Run `remind` on a real runner, with a throwaway PR carrying the label, and confirm it opens one issue, leaves it alone when nothing changed, and closes it, and that the assignee is set. A workflow can be dispatched only once it is on the default branch, so run it from a throwaway branch with a `push` trigger, the `release-please` job deleted and the age limits at zero, and show that nothing in that file can reach the action or the app key. Exercise the merged-PR and failed-run conditions against recorded inputs, with a `gh` shim.
 6. Run `go-toolchain.yml` as a dry run on a throwaway branch with an older `go` line and base image, and confirm the planned edits. Build that branch's result once with `push: false`.
-7. The maintainer sets the repository's `squash_merge_commit_title` to `PR_TITLE`. It's `COMMIT_OR_PR_TITLE` today, which ignores the PR title on a single-commit PR, so a PR retitled `feat:` during review would release as a patch. Do this as soon as item 3 lands.
+7. The maintainer sets the repository's `squash_merge_commit_title` to `PR_TITLE`. It's `COMMIT_OR_PR_TITLE` today, which ignores the PR title on a single-commit PR, so a PR retitled `feat:` during review would release as a patch. It can be set before or after item 3 lands, and sooner is better. Keep `squash_merge_commit_message` as `COMMIT_MESSAGES`, because `PR_BODY` would feed Dependabot's quoted release notes into bodies that release-please parses.
 8. The next `fix:`, `feat:` or `fix(deps):` commit on `main` opens a real release PR. Check it, and that CI ran on it. It stays open, because `AUTO_RELEASE` is unset.
 9. The maintainer sets `AUTO_RELEASE=on` and runs the workflow. This is a deliberate step, isn't part of any PR, and is the first real release.
 
 Only that first release can prove these:
 
-- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does. Both `scan`'s and `publish`'s `if:` have to accept that event, or `publish` is skipped with `scan`.
+- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does. That fallback won't fire for a Release that already exists, so that version stays without an image and the reminder stays open until a newer Release goes out. Both `scan`'s and `publish`'s `if:` have to accept that event, or `publish` is skipped with `scan`.
 - That a Go patch PR's own push and PR-opening steps work. A real Dependabot auto-merge, PR 15, already proved auto-merge and `publish` with the app as actor, so those no longer wait for the first release. The Go-specific steps first run on the next Go release.
 - That the token's three permissions are enough for release-please. It normally runs with everything the app holds. If it fails on labels, add `issues: write` to the token, after checking that the app has it.
 
@@ -208,6 +209,7 @@ Only that first release can prove these:
 - **A title can silently skip a release.** A PR titled without a conventional prefix never triggers one, and nothing flags it. The change goes out with the next release.
 - **More releases.** Dependabot's weekly go-module and digest updates each cause a release, so expect one most weeks.
 - **The check of the published image is narrower than the manual flow.** `TestOutputBaseline` and `scripts/test-container.sh` run in CI, but steps 2 and 6 of the manual release flow don't happen.
+- **A release PR can merge early.** An armed release PR can merge after a `feat!:` lands but before the run retitles it, shipping a breaking change in a patch tag, and the same window ships any commit without a changelog entry. The window is about one run long, and it is accepted.
 - **A bad release can't be recalled.** Only a newer one fixes it.
 - **Scheduled workflows stop after 60 days without repository activity,** which would also stop the reminder. `AGENTS.md` already covers how to check.
 

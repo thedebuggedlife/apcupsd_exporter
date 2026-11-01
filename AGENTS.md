@@ -108,7 +108,7 @@ To check a release, confirm that `ghcr.io/thedebuggedlife/apcupsd_exporter:vX.Y.
 
 ### What picks the version
 
-A PR's squash title becomes the commit title on `main`, and release-please reads it. It must be a conventional commit, or the change releases nothing by itself. The repository's `squash_merge_commit_title` must be `PR_TITLE`: with the default `COMMIT_OR_PR_TITLE`, a single-commit PR is squashed under its commit's title and a retitled PR would release as the wrong version.
+A PR's squash title becomes the commit title on `main`, and release-please reads it. It must be a conventional commit, or the change releases nothing by itself. The repository's `squash_merge_commit_title` must be `PR_TITLE`: with the default `COMMIT_OR_PR_TITLE`, a single-commit PR is squashed under its commit's title and a retitled PR would release as the wrong version. The setting can be changed before or after the release PRs land. Keep `squash_merge_commit_message` as `COMMIT_MESSAGES`, because `PR_BODY` would feed Dependabot's quoted release notes into bodies that release-please parses. The title isn't the only input: a body paragraph that starts with a conventional prefix also counts, for example a `docs: x` PR whose body has a paragraph starting `fix: `. A multi-commit squash is safe, because GitHub prefixes its lines with `* `.
 
 | Commit title | Effect |
 |---|---|
@@ -116,13 +116,14 @@ A PR's squash title becomes the commit title on `main`, and release-please reads
 | `fix:`, `perf:` or `revert:`, with or without a scope | Next patch |
 | `!` before the colon, or a `BREAKING CHANGE` footer | Next major, `1.0.0` from here, which is [held](#hold-rules) |
 | `docs:`, `test:`, `ci:`, `chore:`, `build:`, `refactor:`, `style:` | No release. They go out with the next one |
-| A title that isn't a conventional commit, including a merge commit | No release |
+| A title that isn't a conventional commit | No release |
+| `Revert "fix: a (#12)"`, which GitHub's Revert button gives a PR | Parses to nothing, so no release follows. Retitle it `revert:` or `fix:` |
 
-- **`Release-As: X.Y.Z` in a commit body forces a version.** It is also how an upstream sync gets its own release.
+- **`Release-As: X.Y.Z` in a commit body forces a version,** as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. It is also how an upstream sync gets its own release.
 - **`feat` stays a minor below `1.0.0`,** because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. New metrics go in a minor release.
 - **`exclude-paths`** in `release-please-config.json` drops commits that only touch `.github`, `docs`, `scripts`, `testdata` or `internal/fakenis`, whatever their title. It matches directories only, so it can't list `README.md`.
 - **Dependabot titles are prefixed** so they count: `fix(deps)` for `gomod` and `docker`, which releases a patch, and `ci(deps)` for `github-actions`, which doesn't release, because Actions aren't in the image. The Go toolchain PRs are titled `fix(deps): bump Go to X.Y.Z`.
-- **A sync merge commit triggers nothing by itself,** but the upstream commits it brings are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog.
+- **Upstream syncs:** the `merge_commit_message` setting is `PR_TITLE`, so a GitHub merge commit reads `Merge pull request #N …`, a blank line, then the PR title. release-please splits on a blank line followed by a conventional prefix, so that title paragraph counts: `fix: sync upstream` would release a patch and `feat:` a minor. Title the sync PR `chore: sync upstream`, so the merge doesn't release by itself and its changes go out with the next release. To release a sync at once, add a `Release-As: X.Y.Z` footer under that title paragraph in the merge dialog. The upstream commits the merge brings are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog.
 - **Config:** `release-please-config.json` (`release-type: go`, `v` in the tag, no component, `bootstrap-sha` at the `v0.4.0` commit) and `.release-please-manifest.json` (the last released version). The first release PR adds `CHANGELOG.md`, which covers only `v0.4.0` onwards. All three are in `.dockerignore` or covered by `*.md`.
 - **No hand tags.** A hand tag gets no GitHub Release, and release-please wouldn't take it as the new version. Use `Release-As`.
 
@@ -137,7 +138,7 @@ After the action runs, the `release-please` job finds the open PR labelled `auto
 
 The check fails closed: an unset `AUTO_RELEASE` holds, and so does `ON`. A held PR is the signal. The maintainer can merge it by hand, and that is how a major goes out.
 
-- **To pause all releases,** set `AUTO_RELEASE` to anything but `on` (or delete it) and run `release-please.yml` from the Actions tab so the change takes effect at once. The release PR stays open and keeps collecting commits. To resume, set it back to `on` and run the workflow. This is also how to batch several PRs into one release.
+- **To pause all releases,** set `AUTO_RELEASE` to anything but `on` (or delete it) and run `release-please.yml` from the Actions tab, where it is shown as `Release`, so the change takes effect at once. The release PR stays open and keeps collecting commits. To resume, set it back to `on` and run the workflow. This is also how to batch several PRs into one release.
 - **A pause stops releases, not merges.** Dependabot and Go patch PRs still auto-merge into `main`, and the next release picks them up. The hold for a Go patch is separate and still applies: see [Go toolchain updates](#go-toolchain-updates).
 - **A pause means no new tags,** so anyone pinned to a tag stays on it and `latest` doesn't move.
 
@@ -149,7 +150,7 @@ The `remind` job in `release-please.yml` keeps at most one open issue, titled `A
 - An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count. A waiting Go minor PR doesn't count either, because the open PR is its own notice.
 - The newest GitHub Release is over 2 hours old and its tag's own `ci.yml` run has no successful `publish` job. A `publish` run on `main` for the same commit doesn't count.
 - A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that is resolved. Re-running `release-please.yml` clears it.
-- The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, ended in `failure`, `timed_out` or `startup_failure`. An expired app key shows up here, when nothing else would.
+- The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, ended in `failure`, `timed_out` or `startup_failure`. An expired app key shows up here, when nothing else would. Only a re-run of that failed run, or the next push, clears the `release-please.yml` line, because a dispatch isn't a push run.
 
 The job edits the issue only if the body changed, so a daily run sends no repeat notifications. It closes the issue with a comment when none of this is true. A failed query fails the job and leaves the issue as it was. The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job assigns it to the maintainer's login, which sits in the workflow. Any other issue a workflow opens must do the same.
 
@@ -167,7 +168,8 @@ The job edits the issue only if the body changed, so a daily run sends no repeat
 Limits:
 
 - `latest` can move backwards. A tag on an older commit that's on `main` passes both guards, so `latest` follows it. Re-running an old tag's run does the same.
-- Until the first automated release, nothing has proved that a tag created by release-please with the app token fires `on: push`. If it doesn't, add `release: types: [published]` to `ci.yml`, and make both `scan`'s and `publish`'s `if:` accept that event.
+- Until the first automated release, nothing has proved that a tag created by release-please with the app token fires `on: push`. If it doesn't, add `release: types: [published]` to `ci.yml`, and make both `scan`'s and `publish`'s `if:` accept that event. That fallback won't fire for a Release that already exists, so that version stays without an image and the reminder stays open until a newer Release goes out.
+- An armed release PR can merge after a `feat!:` lands but before the run retitles it, shipping a breaking change in a patch tag, and the same window ships any commit without a changelog entry. The window is about one run long, and it is accepted.
 - Nobody checks a release after it merges. A behaviour change titled `fix:` reaches users on their next pull, and the README says patch releases aren't individually reviewed.
 - Dependabot's weekly updates each cause a release, so expect about one a week.
 - Scheduled workflows stop after 60 days without repository activity, which would also stop the reminder.
@@ -190,7 +192,7 @@ Limits:
 - **Every update in a PR must qualify.** One minor holds a whole PR, which is why the groups are split by level.
 - **Patch and minor mean a move between plain `X.Y.Z` versions.** Pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases, `+incompatible` versions and bare commit SHAs count as unknown. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
 - **Any base image tag change is held.** The `golang` tag is the exception: Dependabot ignores it, and the [Go toolchain workflow](#go-toolchain-updates) bumps it together with `go.mod`, as the one-Go-version rule needs.
-- **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title carries the `commit-message.prefix` from `dependabot.yml`, as in `fix(deps): Bump x from ...`. Dependabot writes `Bump` with a capital B after a prefix, and the check accepts either case.
+- **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title carries the `commit-message.prefix` from `dependabot.yml`, as in `fix(deps): Bump x from ...`. Dependabot writes `Bump` with a capital B because earlier commits in the repository are capitalised, not because of the prefix, and the check accepts either case.
 - **Digest updates stay out of groups.** A group with `update-types` admits only updates that compare higher, and a digest bump keeps its version, so it arrives as its own PR. That is why the `docker` groups keep `update-types`. A group PR holding several digests would be held.
 - **How a security update is recognised:** a Go module PR in the `go-security` group, or an ungrouped one where every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API. `fetch-metadata`'s own `alert-lookup` isn't used: it matches the alert's package name exactly, so it misses a Go alert filed against a package inside the module, and a failed lookup would fail the whole metadata step.
 - **An unreadable alert means an ordinary update.** A security patch still merges as a patch, and a security minor is held.
@@ -216,7 +218,7 @@ Limits:
 - Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure, and the [Go toolchain workflow](#go-toolchain-updates) fixes it once a Go release is out and its image is published. The weekly `schedule` is what catches it when no PRs are open.
 - While `vuln` is failing, it blocks auto-merge too.
 - An auto-merge reaches `main` and `edge`. Users get the fix when the next release goes out, which follows from the commit title: `fix(deps)` releases a patch, `ci(deps)` releases nothing, and a paused `AUTO_RELEASE` delays it. See [Release flow](#release-flow).
-- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. `go-toolchain.yml` and `release-please.yml` also hold it, through `create-github-app-token` on a schedule or a push to `main`, and `release-please.yml` hands the token to `googleapis/release-please-action`, which can write to the repository. The `cooldown` is the only delay before they run with those credentials.
+- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. `go-toolchain.yml` and `release-please.yml` also hold it, through `create-github-app-token` on a schedule or a push to `main`, and `release-please.yml` hands the token to `googleapis/release-please-action`, the only third-party action that receives it, and to the `gh` step that applies the hold rules. The `cooldown` is the only delay before they run with those credentials.
 - The `cooldown` doesn't hold a digest update if the registry gives no publish date.
 - GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly `ci.yml` runs or the daily `go-toolchain.yml` and `release-please.yml` runs stop, check their `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
 
@@ -242,7 +244,7 @@ Dependabot's `docker` updater can't edit `go.mod`, so `.github/workflows/go-tool
 
 The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. In a new clone, add `upstream` and run `git remote set-url --push upstream no_push`, so a push there fails.
 
-To sync, run `git fetch upstream` and `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies. Then check that `TestOutputBaseline` still passes.
+To sync, run `git fetch upstream` and `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies. Then check that `TestOutputBaseline` still passes. Title the sync PR `chore: sync upstream`, and see [What picks the version](#what-picks-the-version) for releasing it.
 
 What differs from upstream, and why:
 
