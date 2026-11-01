@@ -75,6 +75,7 @@ A metric needs four edits in `upscollector.go`: the struct field, the `NewDesc` 
 - **`apcupsd_*` metrics are frozen.** No renames, removals, label changes, or unit changes, because a rename breaks dashboards silently. `apcupsd_output_amps`, which came with an upstream merge, is the only metric added since `v0.3.0`.
 - **`latest` moves only on a release tag,** and tags come only from release-please. See [Release flow](#release-flow).
 - **Never touch upstream.** No PRs, issues, or pushes.
+- **Squash only.** Merge commits and rebase merges are off for the repository. The one exception is an upstream sync, which turns merge commits on for that merge. See [Upstream relationship](#upstream-relationship).
 - **Watch the `gh` default repo.** On a fork, `gh` targets the parent repo by default. Run `gh repo set-default thedebuggedlife/apcupsd_exporter` in any new clone, check with `gh repo set-default --view`, and pass `--repo thedebuggedlife/apcupsd_exporter` when in doubt.
 - **Don't cross-link upstream.** Write references in backticks, like `upstream #34`. A bare `owner/repo#N` or a URL to an upstream PR adds a backlink to its timeline. Linking the upstream repository's front page is fine.
 - **Never run `git push --tags`.** Upstream's `0.1.0`, `v0.2.0`, and `v0.3.0` must not be copied here. Never push a tag by hand either: release-please creates the tags, and a hand tag gets no GitHub Release.
@@ -200,7 +201,7 @@ Limits:
 - **A PR with more than one commit is held.** `fetch-metadata` only checks the first commit, so a commit pushed on top of Dependabot's would otherwise inherit its decision.
 - **Each push is decided again.** If the decision is to hold and auto-merge is on, the workflow turns it off. That includes auto-merge a maintainer turned on by hand, and a metadata failure. If the app token can't be created, the job fails and can't turn it off.
 - **The job isn't a required check,** so a failure in it doesn't block the PR.
-- **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, with no required approvals.
+- **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, and a PR for every change, with no required approvals. Admins keep their bypass on purpose: `enforce_admins` stays off.
 - **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, `allow_auto_merge`, and an Actions event policy.
 - **An Actions event policy keeps `pull_request_target` working.** From 2 December 2026, GitHub blocks that event by default on public repositories with no applicable policy. The repository policy under **Settings > Actions > Policies** allows it for `.github/workflows/dependabot-auto-merge.yml` only. Its `allowed_events` is an allow-list, so never remove its `workflow_path` condition, or it blocks every other event in the repository. A blocked run ends as `startup_failure` with no jobs, and the Dependabot PR stays open.
 - **Review is requested only when a PR is held.** The step that holds a PR calls `POST pulls/{number}/requested_reviewers` for the maintainer, in all three workflows that can hold one. Nothing else pings them, and the repository has no `CODEOWNERS`, which would ping on every PR. Dependabot's own `reviewers` option no longer exists.
@@ -250,6 +251,14 @@ The `origin` remote is the fork and `upstream` is `mdlayher/apcupsd_exporter`. I
 
 To sync, run `git fetch upstream` and `git merge upstream/main` using a real merge commit, so the next sync has a correct merge base, and do it before bumping dependencies. Then check that `TestOutputBaseline` still passes. Title the sync PR `chore: sync upstream`, and see [What picks the version](#what-picks-the-version) for releasing it.
 
+The repository is squash-only, so turn merge commits on for that one merge, and off again straight after:
+
+```sh
+gh api -X PATCH repos/thedebuggedlife/apcupsd_exporter -F allow_merge_commit=true
+gh pr merge <n> --repo thedebuggedlife/apcupsd_exporter --merge
+gh api -X PATCH repos/thedebuggedlife/apcupsd_exporter -F allow_merge_commit=false
+```
+
 What differs from upstream, and why:
 
 | Difference | Why |
@@ -275,6 +284,6 @@ These are declared preferences; they override the superpowers skills' defaults.
 
 - **Worktrees are owned by Paseo** (`paseo.json` runs `go mod download` on creation; they live under `~/.paseo/worktrees/`). If already in a linked worktree, work there. Never use `EnterWorktree` or `git worktree add`. From the main checkout, create a Paseo worktree (`paseo worktree create --mode branch-off --new-branch <name>`, or `mcp__paseo__create_workspace`), because the main checkout may be shared with other agents. Don't run `go get` or `go mod tidy` in a worktree unless the work is a dependency update; if dependencies are missing, run `go mod download`. After removing a worktree outside Paseo, run `scripts/lumen-prune.sh`.
 - **Baseline / verification** is what the CI `test`, `lint` and `vuln` jobs run: `go test -race ./...`, an empty `gofmt -l .`, `go vet ./...`, `staticcheck ./...` and `govulncheck ./...`.
-- **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. Title the PR as a conventional commit, because its squash title picks the version (see [What picks the version](#what-picks-the-version)). Don't put a closing keyword (`close`, `fix`, `resolve` and their forms) directly before an issue number in PR text, even negated, because GitHub ignores the negation; say `Refs #N` or `Part of #N` instead. An upstream sync PR must land with a merge commit, never squash or rebase, or the next sync loses its merge base. Archive the worktree through Paseo, then delete the merged branch.
+- **Finishing a branch:** always push and open a PR on the fork with `gh pr create --repo thedebuggedlife/apcupsd_exporter --base main`; never merge into `main` locally. Title the PR as a conventional commit, because its squash title picks the version (see [What picks the version](#what-picks-the-version)). Don't put a closing keyword (`close`, `fix`, `resolve` and their forms) directly before an issue number in PR text, even negated, because GitHub ignores the negation; say `Refs #N` or `Part of #N` instead. An upstream sync PR is the one exception to squash-only: it must land with a merge commit, or the next sync loses its merge base (see [Upstream relationship](#upstream-relationship)). Archive the worktree through Paseo, then delete the merged branch.
 - **Specs** go in `docs/specs/YYYY-MM-DD-<feature>.md`, committed as `docs:` on the feature branch. Specs are public, so the generic-project rule applies to them.
 - **Plans** and other agent workflow artifacts **never** get committed into the tree.
