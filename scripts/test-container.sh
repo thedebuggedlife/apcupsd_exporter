@@ -85,12 +85,12 @@ assert_response() {
   echo "$name: GET $path returned $status"
 }
 
-echo "--- apcupsd unreachable: healthy, while /metrics returns 500"
+echo "--- apcupsd unreachable: healthy, while /metrics reports it as down"
 run_container "$healthy" 9162
 wait_for_health "$healthy" healthy
 assert_running "$healthy"
 assert_response "$healthy" 9162 /healthz 200
-assert_response "$healthy" 9162 /metrics 500 "connection refused"
+assert_response "$healthy" 9162 /metrics 200 "apcupsd_up 0"
 
 echo "--- mismatched -telemetry.addr: unhealthy, while the exporter serves"
 run_container "$mismatched" 9163 -telemetry.addr=:9163

@@ -1,14 +1,18 @@
 package apcupsdexporter
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mdlayher/apcupsd"
 )
+
+var endAPC = time.Unix(100004, 0)
 
 func TestUPSCollector(t *testing.T) {
 	tests := []struct {
@@ -20,7 +24,7 @@ func TestUPSCollector(t *testing.T) {
 		{
 			desc: "empty",
 			ss: &testStatusSource{
-				s: &apcupsd.Status{},
+				s: &apcupsd.Status{EndAPC: endAPC},
 			},
 			notMatches: []*regexp.Regexp{
 				regexp.MustCompile(`apcupsd_status_`),
@@ -33,6 +37,7 @@ func TestUPSCollector(t *testing.T) {
 			desc: "full",
 			ss: &testStatusSource{
 				s: &apcupsd.Status{
+					EndAPC:   endAPC,
 					Hostname: "foo",
 					Model:    "APC UPS",
 					UPSName:  "bar",
@@ -86,12 +91,14 @@ func TestUPSCollector(t *testing.T) {
 				regexp.MustCompile(`apcupsd_line_frequency_hertz{ups="bar"} 60`),
 				regexp.MustCompile(`apcupsd_battery_date_time_seconds{ups="bar"} 1.6725312e\+09`),
 				regexp.MustCompile(`apcupsd_last_transfer_on_battery_reason{reason="Input frequency out of range",ups="bar"} 1`),
+				regexp.MustCompile(`(?m)^apcupsd_up 1$`),
 			},
 		},
 		{
 			desc: "output amps not reported",
 			ss: &testStatusSource{
 				s: &apcupsd.Status{
+					EndAPC:        endAPC,
 					UPSName:       "bar",
 					OutputVoltage: 120.9,
 				},
@@ -106,7 +113,7 @@ func TestUPSCollector(t *testing.T) {
 		{
 			desc: "line frequency of zero",
 			ss: &testStatusSource{
-				s: &apcupsd.Status{UPSName: "bar", LineFrequency: 0},
+				s: &apcupsd.Status{EndAPC: endAPC, UPSName: "bar", LineFrequency: 0},
 			},
 			notMatches: []*regexp.Regexp{
 				regexp.MustCompile(`apcupsd_line_frequency_hertz`),
@@ -167,7 +174,7 @@ func TestUPSCollectorStatusGauges(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			out := testCollector(t, NewUPSCollector(&testStatusSource{
-				s: &apcupsd.Status{UPSName: "bar", Status: tt.status, StatusFlags: tt.flags},
+				s: &apcupsd.Status{EndAPC: endAPC, UPSName: "bar", Status: tt.status, StatusFlags: tt.flags},
 			}))
 
 			if tt.omitted {
@@ -191,7 +198,7 @@ func TestUPSCollectorStatusGauges(t *testing.T) {
 	}
 }
 
-func TestUPSCollectorSendsOnlyInfoOnLostContact(t *testing.T) {
+func TestUPSCollectorOmitsReadingsOnLostContact(t *testing.T) {
 	tests := []struct {
 		desc   string
 		status string
@@ -207,6 +214,7 @@ func TestUPSCollectorSendsOnlyInfoOnLostContact(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			out := testCollector(t, NewUPSCollector(&testStatusSource{
 				s: &apcupsd.Status{
+					EndAPC:          endAPC,
 					UPSName:         "bar",
 					Status:          tt.status,
 					StatusFlags:     tt.flags,
@@ -219,18 +227,25 @@ func TestUPSCollectorSendsOnlyInfoOnLostContact(t *testing.T) {
 				},
 			}))
 
-			var series []string
-			for _, line := range strings.Split(string(out), "\n") {
-				if strings.HasPrefix(line, "apcupsd_") {
-					series = append(series, line)
-				}
-			}
+			series := apcupsdSeries(out)
 
-			want := fmt.Sprintf(`apcupsd_info{hostname="",model="",status=%q,ups="bar"} 1`, tt.status)
-			if len(series) != 1 || series[0] != want {
+			want := []string{
+				fmt.Sprintf(`apcupsd_info{hostname="",model="",status=%q,ups="bar"} 1`, tt.status),
+				"apcupsd_up 1",
+			}
+			if !slices.Equal(series, want) {
 				t.Fatalf("unexpected series:\ngot:  %q\nwant: %q", series, want)
 			}
 		})
+	}
+}
+
+func TestUPSCollectorStatusErrorReportsDown(t *testing.T) {
+	out := testCollector(t, NewUPSCollector(&testStatusSource{err: errors.New("parse failed")}))
+
+	want := []string{"apcupsd_up 0"}
+	if got := apcupsdSeries(out); !slices.Equal(got, want) {
+		t.Fatalf("unexpected series:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 
@@ -252,7 +267,7 @@ func TestUPSCollectorBatteryDate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.date, func(t *testing.T) {
 			out := testCollector(t, NewUPSCollector(&testStatusSource{
-				s: &apcupsd.Status{UPSName: "bar", BatteryDate: tt.date},
+				s: &apcupsd.Status{EndAPC: endAPC, UPSName: "bar", BatteryDate: tt.date},
 			}))
 
 			if tt.want == "" {
@@ -273,9 +288,10 @@ func TestUPSCollectorBatteryDate(t *testing.T) {
 var _ StatusSource = &testStatusSource{}
 
 type testStatusSource struct {
-	s *apcupsd.Status
+	s   *apcupsd.Status
+	err error
 }
 
 func (ss *testStatusSource) Status() (*apcupsd.Status, error) {
-	return ss.s, nil
+	return ss.s, ss.err
 }

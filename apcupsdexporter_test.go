@@ -3,13 +3,17 @@ package apcupsdexporter
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -56,6 +60,7 @@ func TestExporterDescribeDoesNotDial(t *testing.T) {
 		"apcupsd_status_low_battery",
 		"apcupsd_status_on_battery",
 		"apcupsd_status_online",
+		"apcupsd_up",
 		"apcupsd_ups_load_percent",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -67,15 +72,101 @@ func TestExporterDescribeDoesNotDial(t *testing.T) {
 	}
 }
 
-func TestExporterDialFailureFailsScrape(t *testing.T) {
-	e := New(func(context.Context) (*apcupsd.Client, error) {
+func TestExporterDialFailureReportsDown(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	out := testCollector(t, New(func(context.Context) (*apcupsd.Client, error) {
 		return nil, errors.New("connection refused")
-	})
+	}))
 
-	out := testCollectorStatus(t, e, http.StatusInternalServerError)
+	want := []string{`apcupsd_exporter_build_info{version="dev"} 1`, "apcupsd_up 0"}
+	if got := apcupsdSeries(out); !slices.Equal(got, want) {
+		t.Errorf("unexpected series:\ngot:  %q\nwant: %q", got, want)
+	}
 
-	if !strings.Contains(string(out), "connection refused") {
-		t.Errorf("response does not report the dial error:\n%s", out)
+	if !strings.Contains(logs.String(), "connection refused") {
+		t.Errorf("dial error was not logged: %q", logs.String())
+	}
+}
+
+func TestExporterBadNISFieldReportsDown(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	srv, err := fakenis.Listen("127.0.0.1:0", []string{"UPSNAME  : example-ups\n", "LINEV    : N/A\n"})
+	if err != nil {
+		t.Fatalf("failed to start fake NIS: %v", err)
+	}
+	defer srv.Close()
+
+	out := testCollector(t, New(func(ctx context.Context) (*apcupsd.Client, error) {
+		return apcupsd.DialContext(ctx, "tcp", srv.Addr())
+	}))
+
+	want := []string{`apcupsd_exporter_build_info{version="dev"} 1`, "apcupsd_up 0"}
+	if got := apcupsdSeries(out); !slices.Equal(got, want) {
+		t.Errorf("unexpected series:\ngot:  %q\nwant: %q", got, want)
+	}
+
+	if !strings.Contains(logs.String(), "failed collecting UPS metrics") {
+		t.Errorf("parse error was not logged: %q", logs.String())
+	}
+}
+
+func TestExporterIncompleteResponseReportsDown(t *testing.T) {
+	full, err := fakenis.Response("full")
+	if err != nil {
+		t.Fatalf("failed to load response: %v", err)
+	}
+
+	tests := []struct {
+		desc     string
+		messages []string
+	}{
+		{desc: "closed with no response"},
+		{desc: "closed partway through", messages: full[:len(full)/2]},
+		{desc: "closed just before END APC", messages: full[:len(full)-1]},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			log.SetOutput(io.Discard)
+			defer log.SetOutput(os.Stderr)
+
+			addr := closingNIS(t, tt.messages)
+
+			out := testCollector(t, New(func(ctx context.Context) (*apcupsd.Client, error) {
+				return apcupsd.DialContext(ctx, "tcp", addr)
+			}))
+
+			want := []string{`apcupsd_exporter_build_info{version="dev"} 1`, "apcupsd_up 0"}
+			if got := apcupsdSeries(out); !slices.Equal(got, want) {
+				t.Errorf("unexpected series:\ngot:  %q\nwant: %q", got, want)
+			}
+		})
+	}
+}
+
+func TestExporterTerminatorWithNoMessagesReportsDown(t *testing.T) {
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr)
+
+	srv, err := fakenis.Listen("127.0.0.1:0", nil)
+	if err != nil {
+		t.Fatalf("failed to start fake NIS: %v", err)
+	}
+	defer srv.Close()
+
+	out := testCollector(t, New(func(ctx context.Context) (*apcupsd.Client, error) {
+		return apcupsd.DialContext(ctx, "tcp", srv.Addr())
+	}))
+
+	want := []string{`apcupsd_exporter_build_info{version="dev"} 1`, "apcupsd_up 0"}
+	if got := apcupsdSeries(out); !slices.Equal(got, want) {
+		t.Errorf("unexpected series:\ngot:  %q\nwant: %q", got, want)
 	}
 }
 
@@ -158,15 +249,51 @@ func describedNames(t *testing.T, collector prometheus.Collector) []string {
 	return names
 }
 
-// testCollector scrapes collector and fails the test unless the scrape returns 200.
-func testCollector(t *testing.T, collector prometheus.Collector) []byte {
+// closingNIS sends messages after each command, then closes with no zero-length terminator.
+func closingNIS(t *testing.T, messages []string) string {
 	t.Helper()
 
-	return testCollectorStatus(t, collector, http.StatusOK)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+
+			command := make([]byte, 8)
+			if _, err := io.ReadFull(c, command); err == nil {
+				for _, m := range messages {
+					_, _ = c.Write(binary.BigEndian.AppendUint16(nil, uint16(len(m))))
+					_, _ = c.Write([]byte(m))
+				}
+			}
+			c.Close()
+		}
+	}()
+
+	return l.Addr().String()
 }
 
-// testCollectorStatus is testCollector for tests that expect another status.
-func testCollectorStatus(t *testing.T, collector prometheus.Collector, want int) []byte {
+// apcupsdSeries returns the sample lines of the apcupsd families in out.
+func apcupsdSeries(out []byte) []string {
+	var series []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "apcupsd_") {
+			series = append(series, line)
+		}
+	}
+
+	return series
+}
+
+// testCollector scrapes collector and fails the test unless the scrape returns 200.
+func testCollector(t *testing.T, collector prometheus.Collector) []byte {
 	t.Helper()
 
 	reg := prometheus.NewPedanticRegistry()
@@ -187,8 +314,8 @@ func testCollectorStatus(t *testing.T, collector prometheus.Collector, want int)
 		t.Fatalf("failed to read server response: %v", err)
 	}
 
-	if resp.StatusCode != want {
-		t.Fatalf("unexpected HTTP status: got %d, want %d\n%s", resp.StatusCode, want, buf)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected HTTP status: got %d, want 200\n%s", resp.StatusCode, buf)
 	}
 
 	return buf

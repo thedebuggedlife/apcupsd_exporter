@@ -1,6 +1,7 @@
 package apcupsdexporter
 
 import (
+	"errors"
 	"log"
 	"time"
 
@@ -19,6 +20,7 @@ type StatusSource interface {
 // A UPSCollector is a Prometheus collector for metrics regarding an APC UPS.
 type UPSCollector struct {
 	Info *prometheus.Desc
+	Up   *prometheus.Desc
 
 	UPSLoadPercent                      *prometheus.Desc
 	BatteryChargePercent                *prometheus.Desc
@@ -58,6 +60,13 @@ func NewUPSCollector(ss StatusSource) *UPSCollector {
 			prometheus.BuildFQName(namespace, "", "info"),
 			"Metadata about a given UPS.",
 			[]string{"ups", "hostname", "model", "status"},
+			nil,
+		),
+
+		Up: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "up"),
+			"Whether the exporter could read a complete status from apcupsd (1) or not (0).",
+			nil,
 			nil,
 		),
 
@@ -231,6 +240,7 @@ func NewUPSCollector(ss StatusSource) *UPSCollector {
 func (c *UPSCollector) Describe(ch chan<- *prometheus.Desc) {
 	ds := []*prometheus.Desc{
 		c.Info,
+		c.Up,
 		c.UPSLoadPercent,
 		c.BatteryChargePercent,
 		c.LineVolts,
@@ -265,11 +275,17 @@ func (c *UPSCollector) Describe(ch chan<- *prometheus.Desc) {
 // to the provided prometheus Metric channel.
 func (c *UPSCollector) Collect(ch chan<- prometheus.Metric) {
 	s, err := c.ss.Status()
+	// The library takes a closed connection for the end of a response, and apcupsd always ends with END APC.
+	if err == nil && s.EndAPC.IsZero() {
+		err = errors.New("response ended before END APC")
+	}
 	if err != nil {
 		log.Printf("failed collecting UPS metrics: %v", err)
-		ch <- prometheus.NewInvalidMetric(c.Info, err)
+		ch <- prometheus.MustNewConstMetric(c.Up, prometheus.GaugeValue, 0)
 		return
 	}
+
+	ch <- prometheus.MustNewConstMetric(c.Up, prometheus.GaugeValue, 1)
 
 	ch <- prometheus.MustNewConstMetric(
 		c.Info,

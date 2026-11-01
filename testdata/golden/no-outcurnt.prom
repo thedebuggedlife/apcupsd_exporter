@@ -67,6 +67,9 @@ apcupsd_status_on_battery{ups="example-ups"} 0
 # HELP apcupsd_status_online Whether the UPS is running on AC input power (1) or not (0).
 # TYPE apcupsd_status_online gauge
 apcupsd_status_online{ups="example-ups"} 1
+# HELP apcupsd_up Whether the exporter could read a complete status from apcupsd (1) or not (0).
+# TYPE apcupsd_up gauge
+apcupsd_up 1
 # HELP apcupsd_ups_load_percent Current UPS load percentage.
 # TYPE apcupsd_ups_load_percent gauge
 apcupsd_ups_load_percent{ups="example-ups"} 16
