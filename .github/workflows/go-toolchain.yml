@@ -59,12 +59,23 @@ jobs:
         env:
           VERSION: ${{ steps.target.outputs.version }}
         run: |
-          if ! golang="$(docker buildx imagetools inspect "golang:$VERSION-trixie" --format '{{json .Manifest.Digest}}' | jq -r .)"; then
-            echo "::notice::golang:$VERSION-trixie isn't published yet"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          err="$RUNNER_TEMP/inspect.err"
+          inspect() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' 2> "$err" | jq -r .
+          }
+          fail() {
+            echo "::error::Couldn't inspect $1: $(tr '\n' ' ' < "$err")"
+            exit 1
+          }
+          if ! golang="$(inspect "golang:$VERSION-trixie")"; then
+            if grep -q ': not found' "$err"; then
+              echo "::notice::golang:$VERSION-trixie isn't published yet"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            fail "golang:$VERSION-trixie"
           fi
-          distroless="$(docker buildx imagetools inspect gcr.io/distroless/static-debian13:nonroot --format '{{json .Manifest.Digest}}' | jq -r .)"
+          distroless="$(inspect gcr.io/distroless/static-debian13:nonroot)" || fail gcr.io/distroless/static-debian13:nonroot
           {
             echo "ready=true"
             echo "golang=$golang"
