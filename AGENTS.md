@@ -201,7 +201,8 @@ Limits:
 - **Each push is decided again.** If the decision is to hold and auto-merge is on, the workflow turns it off. That includes auto-merge a maintainer turned on by hand, and a metadata failure. If the app token can't be created, the job fails and can't turn it off.
 - **The job isn't a required check,** so a failure in it doesn't block the PR.
 - **Required checks must exist before security updates can open.** With nothing required, `gh pr merge --auto` merges at once instead of waiting. `main` needs `test`, `lint`, `vuln` and `image` as required checks, with no required approvals.
-- **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, and `allow_auto_merge`.
+- **Repo settings this depends on:** Dependabot alerts and security updates, which forks start with off, `allow_auto_merge`, and an Actions event policy.
+- **An Actions event policy keeps `pull_request_target` working.** From 2 December 2026, GitHub blocks that event by default on public repositories with no applicable policy. The repository policy under **Settings > Actions > Policies** allows it for `.github/workflows/dependabot-auto-merge.yml` only. Its `allowed_events` is an allow-list, so never remove its `workflow_path` condition, or it blocks every other event in the repository. A blocked run ends as `startup_failure` with no jobs, and the Dependabot PR stays open.
 
 ### The `automated-releases` app
 
