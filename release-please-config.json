@@ -1,0 +1,12 @@
+{
+  "bootstrap-sha": "c225ab894041ff4e4f92a39ffcf024b12e3f211e",
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "include-v-in-tag": true,
+      "include-component-in-tag": false,
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [".github", "docs", "scripts", "testdata", "internal/fakenis"]
+    }
+  }
+}

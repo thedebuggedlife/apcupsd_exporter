@@ -101,9 +101,10 @@ Release-please reads the commit titles since the last release.
 | `fix:`, `perf:` or `revert:`, with or without a scope | Next patch |
 | `!` before the colon, or a `BREAKING CHANGE` footer | Next major, `1.0.0` from here, which is [held](#hold-rules) |
 | `docs:`, `test:`, `ci:`, `chore:`, `build:`, `refactor:`, `style:` | No release. They go out with the next one |
-| A title that isn't a conventional commit, including a merge commit | No release |
+| A title that isn't a conventional commit | No release |
+| `Revert "fix: a (#12)"`, which GitHub's Revert button gives a PR | Parses to nothing, so no release follows. Retitle it `revert:` or `fix:` |
 
-`Release-As: X.Y.Z` in a commit body forces a version.
+`Release-As: X.Y.Z` in a commit body forces a version, as a footer of a conventional paragraph. `Merge pull request #30 …` followed by a blank line and only `Release-As: 0.5.0` gives nothing, silently. The title isn't the only input: a body paragraph that starts with a conventional prefix also counts, for example a `docs: x` PR whose body has a paragraph starting `fix: `. A multi-commit squash is safe, because GitHub prefixes its lines with `* `.
 
 Those are release-please's defaults for its `go` release type, except that `feat` stays a minor below `1.0.0` because neither `bump-minor-pre-major` nor `bump-patch-for-minor-pre-major` is set. Item 4 of #11 needs that, because new metrics go in a minor release.
 
@@ -135,7 +136,7 @@ The existing digest title check in `dependabot-auto-merge.yml` already accepts a
 | Job | Runs on | Permissions | Does |
 |---|---|---|---|
 | `release-please` | `push`, `workflow_dispatch` | App token with `contents: write`, `pull-requests: write`, `workflows: write`. No checkout | Runs the action, then applies the hold rules to the open release PR |
-| `remind` | `schedule`, `workflow_dispatch` | `GITHUB_TOKEN`, `issues: write`, `actions: read`, `pull-requests: read`. No checkout | Opens, updates or closes the reminder |
+| `remind` | `schedule`, `workflow_dispatch` | `GITHUB_TOKEN`, `issues: write`, `actions: read`, `contents: read`, `pull-requests: read`. No checkout | Opens, updates or closes the reminder |
 
 `release-please` checks the credentials first, as `dependabot-auto-merge.yml` does. It uses `concurrency` without cancelling, because a cancelled run could leave a merged release PR untagged. The token needs `workflows: write` for the same reason as in item 2: the release branch gets force-updated from `main`.
 
@@ -143,7 +144,7 @@ The action only receives the token, never the private key. It's one more third-p
 
 ### Hold rules
 
-After the action, the job finds the open PR labelled `autorelease: pending` itself, rather than relying on `prs_created`, so a `workflow_dispatch` run can act on a PR nothing has touched. It then decides:
+After the action, the job finds the open PR labelled `autorelease: pending` itself, rather than relying on `prs_created`, so a `workflow_dispatch` run can act on a PR nothing has touched. It lists the open PRs and filters on the label on the client, because `gh pr list --label` goes through the search index, which may not list a PR created seconds earlier by the same run. The step also runs after an action failure, so turning `AUTO_RELEASE` off still disarms a PR. It then decides:
 
 | State | Action |
 |---|---|
@@ -162,23 +163,23 @@ Hand tags are retired, because a hand tag would get no GitHub Release and releas
 
 ### Upstream syncs
 
-A sync lands as a merge commit, which triggers nothing by itself. The maintainer reviewed it by merging it, so its changes go out with the next release, or at once with `Release-As`. The sync's own commits are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog. That's acceptable noise.
+A sync lands as a merge commit. The repository's `merge_commit_message` is `PR_TITLE`, so the commit reads `Merge pull request #N …`, a blank line, then the PR title. release-please splits on a blank line followed by a conventional prefix, so that title paragraph counts: `fix: sync upstream` releases a patch and `feat:` a minor. The sync PR is titled `chore: sync upstream`, so the merge doesn't release by itself and its changes go out with the next release. To release a sync at once, add a `Release-As: X.Y.Z` footer under that title paragraph in the merge dialog. The sync's own commits are read too, so an upstream `feat:` or `fix:` can trigger a release and appear in the changelog. That's acceptable noise.
 
 ### Reminder
 
 The `remind` job keeps at most one open issue, found by a `release-blocked` label, which the job creates if missing. It's opened or updated when any of these is true:
 
 - An `autorelease: pending` PR has been open for over 24 hours. That covers failed checks, a paused automation and a held major.
-- An `automation/go-patch` PR has been open for over 48 hours.
-- The newest GitHub Release is over 2 hours old and its tag's `publish` check run didn't succeed.
+- An `automation/go-patch` PR has been open for over 48 hours. A PR from a fork doesn't count.
+- The newest GitHub Release is over 2 hours old and its tag's own `ci.yml` run has no successful `publish` job. A `publish` run on `main` for the same commit doesn't count.
 - A merged PR still carries `autorelease: pending` an hour after merging. Its Release was never created, and release-please won't open another release PR until that's resolved. Re-running `release-please` clears it.
-- The latest `push` run of `release-please.yml`, or the latest run of `go-toolchain.yml`, failed. An expired app key would show up here, when nothing else would, because no PR would ever appear.
+- The latest `push` run of `release-please.yml`, or the latest `schedule` run of `go-toolchain.yml`, failed. Failed means `failure`, `timed_out` or `startup_failure`. A manual dry run can't hide a failing schedule. An expired app key would show up here, when nothing else would, because no PR would ever appear.
 
 A waiting Go minor PR doesn't count. It's waiting for the maintainer by design, and the open PR is its own notice.
 
 The body lists the reasons and links to each item. The job edits the issue only if the body changed, so a daily run sends no repeat notifications. When none of these is true, it closes the issue with a comment.
 
-The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job always assigns it to `avargaskun`, the maintainer, both when opening it and when updating it. Any other issue a workflow opens must do the same. The login sits in the workflow rather than in a repository variable, so it can't be left unset and leave the issue unseen. `remind` also needs `actions: read` to read the runs.
+The issue is opened by `github-actions[bot]`, which notifies only people watching the repository, so the job always assigns it to `avargaskun`, the maintainer, both when opening it and when updating it. Any other issue a workflow opens must do the same. The login sits in the workflow rather than in a repository variable, so it can't be left unset and leave the issue unseen. `remind` also needs `actions: read` to read the runs, and `contents: read` to read the newest Release.
 
 The check logic stays inline in the workflow, as `dependabot-auto-merge.yml` does.
 
@@ -190,17 +191,16 @@ No test may push a tag or an image, so no release PR may be merged during testin
 2. Run `actionlint` with shellcheck on the new workflows.
 3. Dry-run the config: on a throwaway branch carrying the config, run the release-please CLI's `release-pr --dry-run` with that branch as the target, and confirm the outcome for a `fix:`, a `feat:`, a `feat!:`, a `docs:`, a `fix(ci):` touching only `.github`, and a Dependabot-style `fix(deps):` title. Pin the CLI to the version the action bundles.
 4. Exercise the hold rules against recorded inputs, with a `gh` shim, for each row of the table including an unparsable title.
-5. Run `remind` on a real runner through `workflow_dispatch`, with a throwaway PR carrying the label, and confirm it opens, updates once and closes one issue, and that the assignee is set. Exercise the merged-PR and failed-run conditions against recorded inputs, with a `gh` shim.
+5. Run `remind` on a real runner, with a throwaway PR carrying the label, and confirm it opens one issue, leaves it alone when nothing changed, and closes it, and that the assignee is set. A workflow can be dispatched only once it is on the default branch, so run it from a throwaway branch with a `push` trigger, the `release-please` job deleted and the age limits at zero, and show that nothing in that file can reach the action or the app key. Exercise the merged-PR and failed-run conditions against recorded inputs, with a `gh` shim.
 6. Run `go-toolchain.yml` as a dry run on a throwaway branch with an older `go` line and base image, and confirm the planned edits. Build that branch's result once with `push: false`.
-7. The maintainer sets the repository's `squash_merge_commit_title` to `PR_TITLE`. It's `COMMIT_OR_PR_TITLE` today, which ignores the PR title on a single-commit PR, so a PR retitled `feat:` during review would release as a patch. Do this as soon as item 3 lands.
+7. The maintainer sets the repository's `squash_merge_commit_title` to `PR_TITLE`. It's `COMMIT_OR_PR_TITLE` today, which ignores the PR title on a single-commit PR, so a PR retitled `feat:` during review would release as a patch. It can be set before or after item 3 lands, and sooner is better. Keep `squash_merge_commit_message` as `COMMIT_MESSAGES`, because `PR_BODY` would feed Dependabot's quoted release notes into bodies that release-please parses.
 8. The next `fix:`, `feat:` or `fix(deps):` commit on `main` opens a real release PR. Check it, and that CI ran on it. It stays open, because `AUTO_RELEASE` is unset.
 9. The maintainer sets `AUTO_RELEASE=on` and runs the workflow. This is a deliberate step, isn't part of any PR, and is the first real release.
 
 Only that first release can prove these:
 
-- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does.
-- That `publish` works with the app as actor.
-- That a Go patch PR auto-merges, which depends on the same untested paths as Dependabot auto-merge.
+- That a tag created by a GitHub Release through the API with the app token fires `on: push`. The maintainer's other repositories publish from the same workflow instead, so none of them proves it. If it doesn't fire, add `release: types: [published]` to `ci.yml`, which one of those repositories does. That fallback won't fire for a Release that already exists, so that version stays without an image and the reminder stays open until a newer Release goes out. Both `scan`'s and `publish`'s `if:` have to accept that event, or `publish` is skipped with `scan`.
+- That a Go patch PR's own push and PR-opening steps work. A real Dependabot auto-merge, PR 15, already proved auto-merge and `publish` with the app as actor, so those no longer wait for the first release. The Go-specific steps first run on the next Go release.
 - That the token's three permissions are enough for release-please. It normally runs with everything the app holds. If it fails on labels, add `issues: write` to the token, after checking that the app has it.
 
 ## Known risks
@@ -209,6 +209,7 @@ Only that first release can prove these:
 - **A title can silently skip a release.** A PR titled without a conventional prefix never triggers one, and nothing flags it. The change goes out with the next release.
 - **More releases.** Dependabot's weekly go-module and digest updates each cause a release, so expect one most weeks.
 - **The check of the published image is narrower than the manual flow.** `TestOutputBaseline` and `scripts/test-container.sh` run in CI, but steps 2 and 6 of the manual release flow don't happen.
+- **A release PR can merge early.** An armed release PR can merge after a `feat!:` lands but before the run retitles it, shipping a breaking change in a patch tag, and the same window ships any commit without a changelog entry. The window is about one run long, and it is accepted.
 - **A bad release can't be recalled.** Only a newer one fixes it.
 - **Scheduled workflows stop after 60 days without repository activity,** which would also stop the reminder. `AGENTS.md` already covers how to check.
 
@@ -223,6 +224,7 @@ Only that first release can prove these:
 - **A custom tagging script on a schedule.** The maintainer chose release-please, which is already in use across their repositories, for one way of working everywhere.
 - **Security classification from Dependabot alerts.** The issue's design needed to work out who merged each commit and whether it was a security fix. Releasing everything worth releasing removes the need.
 - **Publishing from the release workflow,** as the sibling repositories do. It would put `packages: write` beside the app key, and it would bypass `ci.yml`'s gates.
+- **Finding the release PR with `gh pr list --label`.** It reads the search index, which can miss a PR created seconds earlier, so the hold rules would skip a fresh PR. The job filters the open PRs on the client instead.
 - **`draft` releases with `force-tag-creation`,** which would keep the Release hidden until its image exists. It adds a step for a problem the reminder already covers.
 
 ## Left to the builder

@@ -12,3 +12,5 @@ scripts
 testdata
 **/*_test.go
 apcupsd_exporter
+release-please-config.json
+.release-please-manifest.json

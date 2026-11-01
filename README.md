@@ -90,6 +90,16 @@ services:
 Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`. Pin a
 `vX.Y.Z` tag if you want to choose when you upgrade.
 
+Releases are made automatically. A merged fix, feature or dependency update
+that passed CI is released with no separate review of the release, and a new
+major version waits for a maintainer. Patch releases aren't individually
+reviewed, so anyone tracking them, or `latest`, receives dependency and Go
+toolchain updates that passed CI with nobody having looked at them.
+A maintainer can pause releases by turning off the repository's `AUTO_RELEASE`
+setting, for example to ship several related changes together. While it's
+paused no new tags appear, so a pinned tag stays as it is and `latest` doesn't
+move.
+
 | Tag | What it is |
 |---|---|
 | `vX.Y.Z` | A release. Published once and not moved; a fix ships as a newer tag |
