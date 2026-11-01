@@ -22,6 +22,7 @@ go run ./internal/fakenis/cmd/fakenis -response full  # fake NIS on 127.0.0.1:35
 docker build -t apcupsd_exporter .
 docker buildx build --platform linux/amd64,linux/arm,linux/arm64 .  # needs a docker-container builder or the containerd image store
 scripts/test-container.sh <image>               # both healthcheck container tests; needs docker and curl
+scripts/test-go-toolchain.sh                    # tests scripts/go-toolchain.sh; needs jq
 ```
 
 There is no Makefile.
@@ -132,7 +133,7 @@ Limits:
 
 - **Every update in a PR must qualify.** One minor holds a whole PR, which is why the groups are split by level.
 - **Patch and minor mean a move between plain `X.Y.Z` versions.** Pseudo-versions such as `github.com/mdlayher/apcupsd`, prereleases, `+incompatible` versions and bare commit SHAs count as unknown. The `update-type` output can't enforce this alone: a pseudo-version bump reads as `semver-patch`, and a module with no update type is left out of the result. So the workflow checks each module in `updated-dependencies-json`.
-- **Any base image tag change is held,** even `golang:1.27.3-trixie` to `1.27.4-trixie`. The one-Go-version rule says that bump must also update `go.mod`, and the `docker` updater won't do that.
+- **Any base image tag change is held.** The `golang` tag is the exception: Dependabot ignores it, and the [Go toolchain workflow](#go-toolchain-updates) bumps it together with `go.mod`, as the one-Go-version rule needs.
 - **How a digest-only update is recognised:** the PR is `docker`, holds one update, has a title ending in ``from `abc1234` to `def5678` `` (and optionally ` in the <group> group`), and `prevVersion` is empty or a backticked digest. `update-type` can't do this, because real digest PRs show `semver-patch` or nothing. Dependabot prints backticks only when the tag is unchanged. `prevVersion` alone can't do it either: it is also empty for a tag change whose tag doesn't start with a digit, such as `nonroot`. The title may carry a prefix like `build(deps): `, because Dependabot copies the repository's commit style.
 - **Digest updates stay out of groups.** A group with `update-types` admits only updates that compare higher, and a digest bump keeps its version, so it arrives as its own PR. That is why the `docker` groups keep `update-types`. A group PR holding several digests would be held.
 - **How a security update is recognised:** a Go module PR in the `go-security` group, or an ungrouped one where every module has an open Dependabot alert fixed by the new version. The group alone isn't enough, because Dependabot can open a single-module security update outside its group. The lookup uses the REST alerts API. `fetch-metadata`'s own `alert-lookup` isn't used: it matches the alert's package name exactly, so it misses a Go alert filed against a package inside the module, and a failed lookup would fail the whole metadata step.
@@ -155,13 +156,30 @@ The workflow does everything with a token from the `automated-releases` GitHub A
 Limits:
 
 - `staticcheck` and `govulncheck` are pinned as `go run` arguments in `ci.yml`, so Dependabot can't update them. They need manual bumps.
-- A held `docker` PR that moves the `golang` image must also update `go.mod`, under the one-Go-version rule.
-- Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure and needs a manual Go bump. The weekly `schedule` is what catches it when no PRs are open.
+- Security updates cover Go modules, not the Go standard library. A standard library advisory shows up as a `vuln` failure, and the [Go toolchain workflow](#go-toolchain-updates) fixes it once a Go release is out and its image is published. The weekly `schedule` is what catches it when no PRs are open.
 - While `vuln` is failing, it blocks auto-merge too.
 - An auto-merge only reaches `main` and `edge`. Users get the fix when someone pushes a `vX.Y.Z` tag, which stays manual.
-- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. The `cooldown` is the only delay before they run with those credentials.
+- `github-actions` patches include the third-party actions in `publish`, and the two actions in the auto-merge job, which holds the app key. `go-toolchain.yml` also holds it, through `create-github-app-token` on a daily schedule. The `cooldown` is the only delay before they run with those credentials.
 - The `cooldown` doesn't hold a digest update if the registry gives no publish date.
-- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly runs stop, check `ci.yml`'s `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
+- GitHub disables scheduled workflows after 60 days without repository activity, and by default on a fork. If the weekly `ci.yml` runs or the daily `go-toolchain.yml` runs stop, check their `state` with `gh api repos/thedebuggedlife/apcupsd_exporter/actions/workflows`.
+
+## Go toolchain updates
+
+Dependabot's `docker` updater can't edit `go.mod`, so `.github/workflows/go-toolchain.yml` moves Go instead. `.github/dependabot.yml` ignores `golang` in its `docker` block. Whether that also stops digest-only updates of `golang` is undocumented; if it does, the pin still refreshes on each Go release.
+
+- **Targets:** `scripts/go-toolchain.sh targets` reads the `go` line in `go.mod` and the stable releases from `https://go.dev/dl/?mode=json`. The patch target is the newest release on the current `X.Y`, and the minor target is the newest with a greater `X.Y`. Both can exist at once, as a matrix of two jobs.
+- **Two PRs on fixed branches:** `automation/go-patch` and `automation/go-minor`, each a single commit from `main` titled `fix(deps): bump Go to X.Y.Z`, so both release as a patch. `apply` sets `go.mod`, the `golang` tag and index digest in the `Dockerfile`, and refreshes the distroless digest on the same tag. A newer target force-pushes the same branch.
+- **Waiting for the image:** a target counts only once `golang:<version>-trixie` is published. Until then the run notices and stops, which isn't a failure.
+- **No change when nothing is new.** An open PR with the right title is left alone (for a patch, once its auto-merge is on), so CI doesn't re-run each day. A PR that GitHub reports as `CONFLICTING` is rebuilt from `main`, which is routine because Dependabot's digest PRs edit the same `Dockerfile` lines. Only a PR from a branch in this repo counts; a fork PR with the same branch name is ignored.
+- **Patch PRs get `gh pr merge --auto --squash`** and wait for the required checks. Minor PRs don't, so they need a manual merge.
+- **Patch auto-merge is re-armed on every run.** A current patch PR whose auto-merge is off gets only `gh pr merge --auto --squash`, with no rebuild or push. That retries a failed arming and also undoes a maintainer turning it off by hand, deliberately: Go patches always go automatically. To hold one, turn the `Go toolchain` workflow off in the Actions tab first, then run `gh pr merge --disable-auto <n>`, because auto-merge is state on the PR and the next run would re-arm it in the other order. A disarmed PR with green checks merges at once when re-armed, because `gh` merges immediately in the `CLEAN` state.
+- **Closing a Go PR brings it back on the next run,** for a patch or a minor. To decline a Go minor, leave its PR open.
+- **A rebuild force-pushes the fixed branch** and drops any commit on it, so fixes for a Go PR land on `main` in their own PR.
+- **Only a missing `golang` tag counts as waiting for the image.** Any other failure to read an image digest fails the run, so a persistent registry problem is visible instead of silently stopping updates.
+- **Dry run:** a `workflow_dispatch` with `dry_run` (the default) prints the commit and stops before the app token is created. A schedule run is never a dry run.
+- **No token before the edits are done.** The checkout uses `persist-credentials: false`, and the job's read-only `GITHUB_TOKEN` is used by the checkout, which doesn't persist it, and by `gh pr list`. The app token is created after the commit, and only the push and `gh` steps receive it.
+- **Why the app token holds `workflows`:** the fixed branches survive a merge, so a later force-push can carry them across workflow changes on `main`, which GitHub may refuse without it. That failure would appear only on a later Go release.
+- **Why an app token at all:** a PR opened with `GITHUB_TOKEN` starts no CI, so the required checks would never report.
 
 ## Upstream relationship
 
@@ -185,7 +203,7 @@ What differs from upstream, and why:
 | Current Go and `client_golang` | Upstream's `client_golang` v1.12.1 lets an oversized NIS message crash the process |
 | The fake NIS and golden output files | They pin the frozen metrics against the real client and the real text format |
 
-Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `scripts/test-container.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
+Everything fork-specific lives in `Dockerfile`, `.dockerignore`, `.github/workflows/`, `.github/dependabot.yml`, `README.md`, `docs/metrics.md`, `metricsdoc_test.go`, `cmd/apcupsd_exporter/`, `internal/fakenis/`, `docs/specs/`, `scripts/test-container.sh`, `scripts/go-toolchain.sh`, `scripts/test-go-toolchain.sh`, `testdata/`, the static `Exporter.Describe`, the `apcupsd_output_amps` omission in `upscollector.go`, and the agent tooling (`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json`, `paseo.json`, `scripts/lumen-prune.sh`, `.gitignore`). Images are published to `ghcr.io/thedebuggedlife/apcupsd_exporter`.
 
 ## Agent workflow (superpowers + Paseo)
 

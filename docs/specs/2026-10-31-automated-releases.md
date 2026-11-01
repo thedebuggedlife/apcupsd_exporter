@@ -62,7 +62,7 @@ Dependabot can't do this: it doesn't manage the `go` line here, and its `docker`
 - The minor target is the newest stable release with a greater `X.Y`.
 - Both can exist at once, and each gets its own PR, so a minor that fails CI can't hold back a patch.
 
-**Waiting for the image:** a target counts only once `golang:<version>-trixie` is published. Until then the run does nothing and says so. This lag is normal, so it isn't a failure.
+**Waiting for the image:** a target counts only once `golang:<version>-trixie` is published. Until then the run does nothing and says so. This lag is normal, so it isn't a failure. Only a missing tag counts as the lag. Any other failure to read the image, such as a network error, fails the run, so it can't silently stop Go updates.
 
 **Each PR:**
 

@@ -21,6 +21,8 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test -race ./...
+      - name: Test the toolchain script
+        run: scripts/test-go-toolchain.sh
 
   lint:
     runs-on: ubuntu-latest

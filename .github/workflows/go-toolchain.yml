@@ -1,0 +1,183 @@
+name: Go toolchain
+
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report the planned change without pushing
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [patch, minor]
+    concurrency:
+      group: go-toolchain-${{ matrix.kind }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      BRANCH: automation/go-${{ matrix.kind }}
+      GH_REPO: ${{ github.repository }}
+      KIND: ${{ matrix.kind }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Pick the target version
+        id: target
+        run: |
+          current="$(awk '/^go [0-9]/ { print $2; exit }' go.mod)"
+          releases="$RUNNER_TEMP/releases.json"
+          curl -fsSL --retry 3 --retry-all-errors 'https://go.dev/dl/?mode=json' -o "$releases"
+          targets="$(scripts/go-toolchain.sh targets "$current" "$releases")"
+          version="$(sed -n "s/^$KIND=//p" <<< "$targets")"
+          if [ -z "$version" ]; then
+            echo "::notice::No $KIND Go release is newer than $current"
+          fi
+          {
+            echo "version=$version"
+            echo "title=fix(deps): bump Go to $version"
+          } >> "$GITHUB_OUTPUT"
+      - name: Resolve the image digests
+        id: digests
+        if: steps.target.outputs.version != ''
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          err="$RUNNER_TEMP/inspect.err"
+          inspect() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest.Digest}}' 2> "$err" | jq -r .
+          }
+          fail() {
+            echo "::error::Couldn't inspect $1: $(tr '\n' ' ' < "$err")"
+            exit 1
+          }
+          if ! golang="$(inspect "golang:$VERSION-trixie")"; then
+            if grep -q ': not found' "$err"; then
+              echo "::notice::golang:$VERSION-trixie isn't published yet"
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            fail "golang:$VERSION-trixie"
+          fi
+          distroless="$(inspect gcr.io/distroless/static-debian13:nonroot)" || fail gcr.io/distroless/static-debian13:nonroot
+          {
+            echo "ready=true"
+            echo "golang=$golang"
+            echo "distroless=$distroless"
+          } >> "$GITHUB_OUTPUT"
+      - name: Look for an open PR
+        id: pr
+        if: steps.digests.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.target.outputs.title }}
+        run: |
+          open="$(gh pr list --head "$BRANCH" --state open --json number,title,mergeable,isCrossRepository,autoMergeRequest)"
+          pr="$(jq -c 'map(select(.isCrossRepository | not)) | .[0] // {}' <<< "$open")"
+          number="$(jq -r '.number // empty' <<< "$pr")"
+          mode=rebuild
+          if [ -n "$number" ] &&
+            [ "$(jq -r '.title' <<< "$pr")" = "$TITLE" ] &&
+            [ "$(jq -r '.mergeable' <<< "$pr")" != CONFLICTING ]; then
+            mode=none
+            if [ "$KIND" = patch ] && [ "$(jq -r '.autoMergeRequest == null' <<< "$pr")" = true ]; then
+              mode=arm
+            fi
+          fi
+          case "$mode" in
+            none) echo "::notice::PR #$number is already up to date" ;;
+            arm) echo "::notice::PR #$number is up to date but auto-merge is off" ;;
+          esac
+          {
+            echo "mode=$mode"
+            echo "number=$number"
+          } >> "$GITHUB_OUTPUT"
+      - name: Apply the update
+        if: steps.pr.outputs.mode == 'rebuild'
+        env:
+          DISTROLESS_DIGEST: ${{ steps.digests.outputs.distroless }}
+          GOLANG_DIGEST: ${{ steps.digests.outputs.golang }}
+          TITLE: ${{ steps.target.outputs.title }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          scripts/go-toolchain.sh apply "$VERSION" "$GOLANG_DIGEST" "$DISTROLESS_DIGEST"
+          git add go.mod Dockerfile
+          git -c user.name='automated-releases[bot]' -c user.email='automated-releases[bot]@users.noreply.github.com' \
+            commit -m "$TITLE"
+      - name: Show the planned change
+        if: steps.pr.outputs.mode == 'rebuild' && github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: git --no-pager show --stat -p HEAD
+      - name: Show the planned auto-merge
+        if: steps.pr.outputs.mode == 'arm' && github.event_name == 'workflow_dispatch' && inputs.dry_run
+        env:
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          echo "::notice::Would turn on auto-merge for PR #$NUMBER"
+      - name: Check the app credentials
+        if: (steps.pr.outputs.mode == 'rebuild' || steps.pr.outputs.mode == 'arm') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+        env:
+          APP_ID: ${{ vars.RELEASE_BOT_APP_ID }}
+          PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_BOT_APP_ID or RELEASE_BOT_PRIVATE_KEY isn't available to this event"
+            exit 1
+          fi
+      - name: Create app token
+        id: token
+        if: (steps.pr.outputs.mode == 'rebuild' || steps.pr.outputs.mode == 'arm') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Push the branch
+        if: steps.token.outcome == 'success' && steps.pr.outputs.mode == 'rebuild'
+        env:
+          TOKEN: ${{ steps.token.outputs.token }}
+        run: git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+      - name: Open or update the PR
+        if: steps.token.outcome == 'success' && steps.pr.outputs.mode == 'rebuild'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+          TITLE: ${{ steps.target.outputs.title }}
+          VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          body="Sets Go to $VERSION in go.mod and the Dockerfile, and refreshes the pinned golang and distroless image digests."
+          if [ "$KIND" = patch ]; then
+            body="$body Auto-merge is on and waits for the required checks."
+          else
+            body="$body This is a minor Go release, so it needs a manual merge."
+          fi
+          if [ -n "$NUMBER" ]; then
+            gh api -X PATCH "repos/$GH_REPO/pulls/$NUMBER" -f title="$TITLE" -f body="$body"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$body"
+          fi
+      - name: Enable auto-merge
+        if: steps.token.outcome == 'success' && matrix.kind == 'patch'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          number="$(gh pr list --head "$BRANCH" --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not)) | .[0].number // empty')"
+          [ -n "$number" ] || { echo "::error::No open PR for $BRANCH"; exit 1; }
+          gh pr merge --auto --squash "$number"
