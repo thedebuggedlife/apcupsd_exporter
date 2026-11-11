@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.6.0...v0.6.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **deps:** bump Go to 1.27.4 ([#32](https://github.com/thedebuggedlife/apcupsd_exporter/issues/32)) ([ad3ca5b](https://github.com/thedebuggedlife/apcupsd_exporter/commit/ad3ca5b44a5cdb5ee716d9bd44fa89a6ea91eff5))
+
 ## [0.6.0](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.5.1...v0.6.0) (2026-11-01)
 
 
