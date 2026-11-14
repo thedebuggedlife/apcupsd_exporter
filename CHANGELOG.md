@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.6.1...v0.6.2) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** Bump distroless/static-debian13 from `25ac8f0` to `aafe993` ([#34](https://github.com/thedebuggedlife/apcupsd_exporter/issues/34)) ([ae6c6a8](https://github.com/thedebuggedlife/apcupsd_exporter/commit/ae6c6a80e85af7dfbef4c8575e55aa94370973c8))
+
 ## [0.6.1](https://github.com/thedebuggedlife/apcupsd_exporter/compare/v0.6.0...v0.6.1) (2026-11-11)
 
 
